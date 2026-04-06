@@ -1,0 +1,19 @@
+.venv/
+*.tar.xz
+SalamanderGrandPiano*/
+__pycache__/
+*.pyc
+
+# Android
+platform_android/.gradle/
+platform_android/build/
+platform_android/app/build/
+platform_android/app/.cxx/
+platform_android/app/src/main/assets/soundfonts/
+platform_android/local.properties
+platform_android/gradle/wrapper/gradle-wrapper.jar
+*.apk
+*.aab
+
+# FluidSynth prebuilt libs (downloaded, not source)
+platform_android/fluidsynth-libs/
