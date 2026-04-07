@@ -1,0 +1,33 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Piano keys in pride colors, centered in the 108x108 adaptive icon safe zone -->
+
+    <!-- White keys with pride colors -->
+    <path android:fillColor="#E40303"
+        android:pathData="M24,30 L34,30 L34,78 L24,78 Z"/>
+    <path android:fillColor="#FF8C00"
+        android:pathData="M34,30 L44,30 L44,78 L34,78 Z"/>
+    <path android:fillColor="#FFED00"
+        android:pathData="M44,30 L54,30 L54,78 L44,78 Z"/>
+    <path android:fillColor="#008026"
+        android:pathData="M54,30 L64,30 L64,78 L54,78 Z"/>
+    <path android:fillColor="#004DFF"
+        android:pathData="M64,30 L74,30 L74,78 L64,78 Z"/>
+    <path android:fillColor="#750787"
+        android:pathData="M74,30 L84,30 L84,78 L74,78 Z"/>
+
+    <!-- Black keys -->
+    <path android:fillColor="#1A1A1A"
+        android:pathData="M30,30 L38,30 L38,58 L30,58 Z"/>
+    <path android:fillColor="#1A1A1A"
+        android:pathData="M40,30 L48,30 L48,58 L40,58 Z"/>
+    <path android:fillColor="#1A1A1A"
+        android:pathData="M60,30 L68,30 L68,58 L60,58 Z"/>
+    <path android:fillColor="#1A1A1A"
+        android:pathData="M70,30 L78,30 L78,58 L70,58 Z"/>
+
+</vector>
