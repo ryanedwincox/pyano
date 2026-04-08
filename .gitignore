@@ -17,3 +17,7 @@ platform_android/gradle/wrapper/gradle-wrapper.jar
 
 # FluidSynth prebuilt libs (downloaded, not source)
 platform_android/fluidsynth-libs/
+
+# Signing keystores — never commit
+*.keystore
+*.jks

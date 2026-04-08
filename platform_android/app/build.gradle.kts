@@ -37,9 +37,19 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../pyano-release.keystore")
+            storePassword = "pyano123"
+            keyAlias = "pyano"
+            keyPassword = "pyano123"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
