@@ -1,6 +1,7 @@
 package com.pyano.ui
 
 import android.media.midi.MidiDeviceInfo
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -9,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.pyano.PyanoViewModel
 
@@ -59,6 +61,15 @@ fun PyanoApp(viewModel: PyanoViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Pyano") },
+                actions = {
+                    Image(
+                        painter = painterResource(id = com.pyano.R.drawable.ic_pyano_logo),
+                        contentDescription = "Pyano logo",
+                        modifier = Modifier
+                            .padding(end = 16.dp)
+                            .size(40.dp)
+                    )
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 )
