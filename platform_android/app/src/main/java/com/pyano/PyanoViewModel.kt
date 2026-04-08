@@ -204,17 +204,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 setAudioOutput(saved)
             }
         }
-        val context2 = getApplication<Application>()
-        val audioManager = context2.getSystemService(AudioManager::class.java)
-        val currentDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val hasUsb = currentDevices.any {
-            it.type == AudioDeviceInfo.TYPE_USB_DEVICE || it.type == AudioDeviceInfo.TYPE_USB_HEADSET
-        }
-        if (hasUsb) {
-            val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
-            Log.i(TAG, "USB audio detected at startup: volume maxed to $maxVol")
-        }
+        maxSystemMediaVolume("startup")
 
         // Start activity monitor polling
         viewModelScope.launch {
@@ -265,15 +255,28 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         engine.setAudioDevice(output.id)
         Log.i(TAG, "Set audio output: ${output.name} (id=${output.id})")
 
-        // Max out system volume for USB audio devices (volume controlled on interface)
-        val isUsb = output.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                    output.type == AudioDeviceInfo.TYPE_USB_HEADSET
-        if (isUsb) {
-            val context = getApplication<Application>()
-            val audioManager = context.getSystemService(AudioManager::class.java)
+        // Always max out system media volume on output change. Pyano expects to
+        // drive the device at unity and have the user attenuate at the speaker /
+        // interface / headphone amp. The built-in speaker is the one case where
+        // we leave it alone (so we don't blast the user).
+        if (output.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+            maxSystemMediaVolume("output=${output.name}")
+        }
+    }
+
+    private fun maxSystemMediaVolume(reason: String) {
+        try {
+            val audioManager = getApplication<Application>()
+                .getSystemService(AudioManager::class.java)
             val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
-            Log.i(TAG, "USB audio: volume maxed to $maxVol")
+            val actual = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            Log.i(TAG, "Maxed media volume to $maxVol (actual=$actual) [$reason]")
+            if (actual < maxVol) {
+                Log.w(TAG, "Volume did not reach max — likely DnD/zen blocking setStreamVolume")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set media volume [$reason]", e)
         }
     }
 

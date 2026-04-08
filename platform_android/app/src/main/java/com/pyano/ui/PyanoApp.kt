@@ -1,6 +1,7 @@
 package com.pyano.ui
 
 import android.media.midi.MidiDeviceInfo
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -112,7 +113,13 @@ fun PyanoApp(viewModel: PyanoViewModel) {
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.weight(1f)
                             )
-                            FilledTonalButton(onClick = { showSfBrowser = true }) {
+                            OutlinedButton(
+                                onClick = { showSfBrowser = true },
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                )
+                            ) {
                                 Text("Browse")
                             }
                         }

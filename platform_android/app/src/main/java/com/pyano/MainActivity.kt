@@ -25,6 +25,10 @@ class MainActivity : ComponentActivity() {
         if (granted) viewModel.scanSoundFonts()
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* no-op: service runs either way, only the visible notification is affected */ }
+
     private val manageStorageLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -38,10 +42,31 @@ class MainActivity : ComponentActivity() {
 
         viewModel.initialize()
         requestStoragePermission()
+        requestNotificationPermissionIfNeeded()
+        // Start the foreground service so audio survives screen-off / backgrounding.
+        PyanoAudioService.start(this)
 
         setContent {
             PyanoTheme {
                 PyanoApp(viewModel = viewModel)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        // Only stop the service when the user actually closes the app, not on
+        // configuration changes (rotation, etc).
+        if (isFinishing) {
+            PyanoAudioService.stop(this)
+        }
+        super.onDestroy()
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            val perm = Manifest.permission.POST_NOTIFICATIONS
+            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(perm)
             }
         }
     }
