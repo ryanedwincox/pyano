@@ -36,7 +36,7 @@ public:
 
         fluid_settings_setnum(settings, "synth.sample-rate", (double)sampleRate);
         fluid_settings_setint(settings, "synth.audio-channels", 1); // 1 stereo pair
-        fluid_settings_setint(settings, "synth.polyphony", 128);
+        fluid_settings_setint(settings, "synth.polyphony", 512);
         fluid_settings_setint(settings, "synth.threadsafe-api", 1);
 
         synth = new_fluid_synth(settings);
@@ -138,7 +138,11 @@ public:
 
     // MIDI events — called from MIDI thread, must be fast
     void noteOn(int channel, int note, int velocity) {
-        if (synth) fluid_synth_noteon(synth, channel, note, velocity);
+        if (synth) {
+            fluid_synth_noteon(synth, channel, note, velocity);
+        } else {
+            LOGE("noteOn called but synth is null! ch=%d note=%d vel=%d", channel, note, velocity);
+        }
     }
 
     void noteOff(int channel, int note) {
