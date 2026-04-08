@@ -26,8 +26,10 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "Pyano"
         private const val DEFAULT_SF = "FluidR3_GM.sf2"
+        private const val PREFS_NAME = "pyano_settings"
     }
 
+    private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
     val engine = FluidSynthEngine()
     private val midiManager = MidiDeviceManager(application)
     private var midiEventHandler: MidiEventHandler? = null
@@ -70,37 +72,48 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _outputLevel = MutableStateFlow(0f)
     val outputLevel = _outputLevel.asStateFlow()
 
-    private val _gain = MutableStateFlow(3.0f)
+    private val _gain = MutableStateFlow(prefs.getFloat("gain", 3.0f))
     val gain = _gain.asStateFlow()
 
-    private val _bufferSize = MutableStateFlow(256)
+    private val _bufferSize = MutableStateFlow(prefs.getInt("bufferSize", 256))
     val bufferSize = _bufferSize.asStateFlow()
 
     // Reverb
-    private val _reverbOn = MutableStateFlow(true)
+    private val _reverbOn = MutableStateFlow(prefs.getBoolean("reverbOn", true))
     val reverbOn = _reverbOn.asStateFlow()
-    private val _reverbRoom = MutableStateFlow(0.2f)
+    private val _reverbRoom = MutableStateFlow(prefs.getFloat("reverbRoom", 0.2f))
     val reverbRoom = _reverbRoom.asStateFlow()
-    private val _reverbDamp = MutableStateFlow(0.0f)
+    private val _reverbDamp = MutableStateFlow(prefs.getFloat("reverbDamp", 0.0f))
     val reverbDamp = _reverbDamp.asStateFlow()
-    private val _reverbWidth = MutableStateFlow(0.5f)
+    private val _reverbWidth = MutableStateFlow(prefs.getFloat("reverbWidth", 0.5f))
     val reverbWidth = _reverbWidth.asStateFlow()
-    private val _reverbLevel = MutableStateFlow(0.9f)
+    private val _reverbLevel = MutableStateFlow(prefs.getFloat("reverbLevel", 0.9f))
     val reverbLevel = _reverbLevel.asStateFlow()
 
     // Chorus
-    private val _chorusOn = MutableStateFlow(true)
+    private val _chorusOn = MutableStateFlow(prefs.getBoolean("chorusOn", true))
     val chorusOn = _chorusOn.asStateFlow()
-    private val _chorusVoices = MutableStateFlow(3)
+    private val _chorusVoices = MutableStateFlow(prefs.getInt("chorusVoices", 3))
     val chorusVoices = _chorusVoices.asStateFlow()
-    private val _chorusLevel = MutableStateFlow(2.0f)
+    private val _chorusLevel = MutableStateFlow(prefs.getFloat("chorusLevel", 2.0f))
     val chorusLevel = _chorusLevel.asStateFlow()
-    private val _chorusSpeed = MutableStateFlow(0.3f)
+    private val _chorusSpeed = MutableStateFlow(prefs.getFloat("chorusSpeed", 0.3f))
     val chorusSpeed = _chorusSpeed.asStateFlow()
-    private val _chorusDepth = MutableStateFlow(8.0f)
+    private val _chorusDepth = MutableStateFlow(prefs.getFloat("chorusDepth", 8.0f))
     val chorusDepth = _chorusDepth.asStateFlow()
-    private val _chorusType = MutableStateFlow(0)
+    private val _chorusType = MutableStateFlow(prefs.getInt("chorusType", 0))
     val chorusType = _chorusType.asStateFlow()
+
+    // Saved soundfont path
+    private val savedSfPath = prefs.getString("sfPath", null)
+    private val savedSfFileName = prefs.getString("sfFileName", null)
+    private val savedPresetIndex = prefs.getInt("presetIndex", 0)
+    private val savedAudioOutputId = prefs.getInt("audioOutputId", 0)
+
+    private fun save(key: String, value: Float) = prefs.edit().putFloat(key, value).apply()
+    private fun save(key: String, value: Int) = prefs.edit().putInt(key, value).apply()
+    private fun save(key: String, value: Boolean) = prefs.edit().putBoolean(key, value).apply()
+    private fun save(key: String, value: String) = prefs.edit().putString(key, value).apply()
 
     private val _isLoading = MutableStateFlow(true)
     val isLoading = _isLoading.asStateFlow()
@@ -116,20 +129,49 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Apply initial gain
+        // Apply saved settings
         engine.setGain(_gain.value)
+        if (_reverbOn.value) {
+            engine.setReverb(_reverbRoom.value, _reverbDamp.value, _reverbWidth.value, _reverbLevel.value)
+        } else {
+            engine.setReverbOn(false)
+        }
+        if (_chorusOn.value) {
+            engine.setChorus(_chorusVoices.value, _chorusLevel.value, _chorusSpeed.value, _chorusDepth.value, _chorusType.value)
+        } else {
+            engine.setChorusOn(false)
+        }
 
-        // Copy and load bundled soundfont
+        // Load saved soundfont or fallback to bundled
         val context = getApplication<Application>()
-        val sfPath = engine.copySoundFontFromAssets(context, DEFAULT_SF)
-        if (sfPath != null) {
-            val sfId = engine.loadSoundFont(sfPath)
+        var loaded = false
+        if (savedSfPath != null && java.io.File(savedSfPath).exists()) {
+            val sfId = engine.loadSoundFont(savedSfPath)
             if (sfId >= 0) {
-                engine.programSelect(0, sfId, 0, 0)
+                val info = SF2MetadataReader.readFromFile(java.io.File(savedSfPath))
+                _soundFontName.value = info?.name ?: savedSfFileName ?: DEFAULT_SF
                 refreshPresets(sfId)
-                val info = SF2MetadataReader.readFromFile(java.io.File(sfPath))
-                _soundFontName.value = info?.name ?: DEFAULT_SF
-                Log.i(TAG, "Default soundfont loaded")
+                // Restore saved preset
+                if (savedPresetIndex < _presets.value.size) {
+                    selectPreset(savedPresetIndex)
+                } else {
+                    engine.programSelect(0, sfId, 0, 0)
+                }
+                loaded = true
+                Log.i(TAG, "Restored saved soundfont: $savedSfPath")
+            }
+        }
+        if (!loaded) {
+            val bundledPath = engine.copySoundFontFromAssets(context, DEFAULT_SF)
+            if (bundledPath != null) {
+                val sfId = engine.loadSoundFont(bundledPath)
+                if (sfId >= 0) {
+                    engine.programSelect(0, sfId, 0, 0)
+                    refreshPresets(sfId)
+                    val info = SF2MetadataReader.readFromFile(java.io.File(bundledPath))
+                    _soundFontName.value = info?.name ?: DEFAULT_SF
+                    Log.i(TAG, "Default soundfont loaded")
+                }
             }
         }
 
@@ -154,8 +196,14 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             connectMidiDevice(devices[0])
         }
 
-        // Enumerate audio outputs and max volume if USB is default
+        // Enumerate audio outputs and restore saved selection
         refreshAudioOutputs()
+        if (savedAudioOutputId != 0) {
+            val saved = _audioOutputs.value.find { it.id == savedAudioOutputId }
+            if (saved != null) {
+                setAudioOutput(saved)
+            }
+        }
         val context2 = getApplication<Application>()
         val audioManager = context2.getSystemService(AudioManager::class.java)
         val currentDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
@@ -213,6 +261,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAudioOutput(output: AudioOutput) {
         _selectedAudioOutput.value = output
+        save("audioOutputId", output.id)
         engine.setAudioDevice(output.id)
         Log.i(TAG, "Set audio output: ${output.name} (id=${output.id})")
 
@@ -284,6 +333,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         val presetList = _presets.value
         if (index < 0 || index >= presetList.size) return
         _selectedPresetIndex.value = index
+        save("presetIndex", index)
         val preset = presetList[index]
         val sfId = engine.soundFontId
         if (sfId >= 0) {
@@ -294,36 +344,43 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setGain(value: Float) {
         _gain.value = value
+        save("gain", value)
         engine.setGain(value)
     }
 
     fun setBufferSize(value: Int) {
         _bufferSize.value = value
+        save("bufferSize", value)
         engine.setBufferSize(value)
     }
 
     fun setReverbOn(on: Boolean) {
         _reverbOn.value = on
+        save("reverbOn", on)
         engine.setReverbOn(on)
     }
 
     fun setReverbRoom(value: Float) {
         _reverbRoom.value = value
+        save("reverbRoom", value)
         applyReverb()
     }
 
     fun setReverbDamp(value: Float) {
         _reverbDamp.value = value
+        save("reverbDamp", value)
         applyReverb()
     }
 
     fun setReverbWidth(value: Float) {
         _reverbWidth.value = value
+        save("reverbWidth", value)
         applyReverb()
     }
 
     fun setReverbLevel(value: Float) {
         _reverbLevel.value = value
+        save("reverbLevel", value)
         applyReverb()
     }
 
@@ -333,31 +390,37 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setChorusOn(on: Boolean) {
         _chorusOn.value = on
+        save("chorusOn", on)
         engine.setChorusOn(on)
     }
 
     fun setChorusVoices(value: Int) {
         _chorusVoices.value = value
+        save("chorusVoices", value)
         applyChorus()
     }
 
     fun setChorusLevel(value: Float) {
         _chorusLevel.value = value
+        save("chorusLevel", value)
         applyChorus()
     }
 
     fun setChorusSpeed(value: Float) {
         _chorusSpeed.value = value
+        save("chorusSpeed", value)
         applyChorus()
     }
 
     fun setChorusDepth(value: Float) {
         _chorusDepth.value = value
+        save("chorusDepth", value)
         applyChorus()
     }
 
     fun setChorusType(value: Int) {
         _chorusType.value = value
+        save("chorusType", value)
         applyChorus()
     }
 
@@ -366,31 +429,23 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun scanSoundFonts() {
-        val context = getApplication<Application>()
-        val sfDir = java.io.File(context.filesDir, "soundfonts")
-        sfDir.mkdirs()
-
         val fonts = mutableListOf<SF2Info>()
-        val seen = mutableSetOf<String>()
 
-        // Scan internal storage (bundled + previously imported)
-        sfDir.listFiles()?.filter {
-            it.extension.equals("sf2", ignoreCase = true)
-        }?.forEach { file ->
-            val isBundled = file.name == DEFAULT_SF
-            SF2MetadataReader.readFromFile(file, isBundled)?.let {
-                fonts.add(it)
-                seen.add(file.name)
-            }
+        // Bundled soundfont from internal storage
+        val context = getApplication<Application>()
+        val bundledFile = java.io.File(context.filesDir, "soundfonts/$DEFAULT_SF")
+        if (bundledFile.exists()) {
+            SF2MetadataReader.readFromFile(bundledFile, isBundled = true)?.let { fonts.add(it) }
         }
 
         // Scan Downloads folder
         val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
             android.os.Environment.DIRECTORY_DOWNLOADS
         )
+        Log.i(TAG, "Scanning Downloads: ${downloadsDir.absolutePath}, exists=${downloadsDir.exists()}, canRead=${downloadsDir.canRead()}")
         if (downloadsDir.exists() && downloadsDir.canRead()) {
             downloadsDir.listFiles()?.filter {
-                it.extension.equals("sf2", ignoreCase = true) && it.name !in seen
+                it.extension.equals("sf2", ignoreCase = true)
             }?.forEach { file ->
                 SF2MetadataReader.readFromFile(file)?.let { fonts.add(it) }
             }
@@ -412,6 +467,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 val info = SF2MetadataReader.readFromFile(java.io.File(path))
                 _soundFontName.value = info?.name ?: fileName.removeSuffix(".sf2")
                 refreshPresets(sfId)
+                save("sfPath", path)
+                save("sfFileName", fileName)
+                save("presetIndex", 0)
             }
             _isLoading.value = false
         }.start()
