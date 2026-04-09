@@ -27,6 +27,10 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         private const val TAG = "Pyano"
         private const val DEFAULT_SF = "FluidR3_GM.sf2"
         private const val PREFS_NAME = "pyano_settings"
+        // Per-channel effect sends forced after each program change so reverb/chorus
+        // behaves consistently across instruments (see applyChannelSendDefaults).
+        private const val REVERB_SEND_DEFAULT = 96
+        private const val CHORUS_SEND_DEFAULT = 64
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
@@ -156,6 +160,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                     selectPreset(savedPresetIndex)
                 } else {
                     engine.programSelect(0, sfId, 0, 0)
+                    applyChannelSendDefaults(0)
                 }
                 loaded = true
                 Log.i(TAG, "Restored saved soundfont: $savedSfPath")
@@ -167,6 +172,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 val sfId = engine.loadSoundFont(bundledPath)
                 if (sfId >= 0) {
                     engine.programSelect(0, sfId, 0, 0)
+                    applyChannelSendDefaults(0)
                     refreshPresets(sfId)
                     val info = SF2MetadataReader.readFromFile(java.io.File(bundledPath))
                     _soundFontName.value = info?.name ?: DEFAULT_SF
@@ -341,8 +347,21 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         val sfId = engine.soundFontId
         if (sfId >= 0) {
             engine.programSelect(0, sfId, preset.bank, preset.program)
+            applyChannelSendDefaults(0)
             Log.i(TAG, "Selected preset: ${preset.name} (bank=${preset.bank}, prog=${preset.program})")
         }
+    }
+
+    /**
+     * Force a consistent reverb/chorus send level on a channel after a program change.
+     * SF2 presets reset CC91/CC93 to the preset's default modulators on program_select,
+     * which is often 0 for non-piano instruments — making the global reverb inaudible
+     * even though the reverb engine is on. Override here so reverb behaves the same
+     * across every instrument.
+     */
+    private fun applyChannelSendDefaults(channel: Int) {
+        engine.cc(channel, 91, REVERB_SEND_DEFAULT)
+        engine.cc(channel, 93, CHORUS_SEND_DEFAULT)
     }
 
     fun setGain(value: Float) {
@@ -467,6 +486,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             val sfId = engine.loadSoundFont(path)
             if (sfId >= 0) {
                 engine.programSelect(0, sfId, 0, 0)
+                applyChannelSendDefaults(0)
                 val info = SF2MetadataReader.readFromFile(java.io.File(path))
                 _soundFontName.value = info?.name ?: fileName.removeSuffix(".sf2")
                 refreshPresets(sfId)
@@ -490,6 +510,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 val sfId = engine.loadSoundFont(path)
                 if (sfId >= 0) {
                     engine.programSelect(0, sfId, 0, 0)
+                    applyChannelSendDefaults(0)
                     val info = SF2MetadataReader.readFromFile(java.io.File(path))
                     _soundFontName.value = info?.name ?: fileName.removeSuffix(".sf2")
                     refreshPresets(sfId)
