@@ -32,6 +32,11 @@ int engine_set_buffer_size(void* engine, int bufferSize);
 int engine_get_presets(void* engine, int sfId, int* banks, int* programs, const char** names, int maxPresets);
 int engine_set_audio_device(void* engine, int deviceId);
 float engine_get_peak_level(void* engine);
+void engine_start_metronome(void* engine);
+void engine_stop_metronome(void* engine);
+void engine_set_metronome_bpm(void* engine, int bpm);
+void engine_set_metronome_time_sig(void* engine, int beats);
+int engine_get_metronome_beat(void* engine);
 
 // JNI functions
 
@@ -166,6 +171,35 @@ Java_com_pyano_audio_FluidSynthEngine_nativeGetPresets(JNIEnv* env, jobject thiz
 
     return result;
     #undef MAX_PRESETS
+}
+
+// --- Metronome JNI functions ---
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeStartMetronome(JNIEnv* env, jobject thiz, jlong ptr) {
+    engine_start_metronome((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeStopMetronome(JNIEnv* env, jobject thiz, jlong ptr) {
+    engine_stop_metronome((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeSetMetronomeBpm(JNIEnv* env, jobject thiz,
+                                                             jlong ptr, jint bpm) {
+    engine_set_metronome_bpm((void*)(intptr_t)ptr, bpm);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeSetMetronomeTimeSig(JNIEnv* env, jobject thiz,
+                                                                  jlong ptr, jint beats) {
+    engine_set_metronome_time_sig((void*)(intptr_t)ptr, beats);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeGetMetronomeBeat(JNIEnv* env, jobject thiz, jlong ptr) {
+    return engine_get_metronome_beat((void*)(intptr_t)ptr);
 }
 
 #ifdef __cplusplus

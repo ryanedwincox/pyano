@@ -121,6 +121,19 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _chorusType = MutableStateFlow(prefs.getInt("chorusType", 0))
     val chorusType = _chorusType.asStateFlow()
 
+    // Metronome
+    private val _metronomeBpm = MutableStateFlow(prefs.getInt("metronomeBpm", 120))
+    val metronomeBpm = _metronomeBpm.asStateFlow()
+
+    private val _metronomeTimeSig = MutableStateFlow(prefs.getInt("metronomeTimeSig", 4))
+    val metronomeTimeSig = _metronomeTimeSig.asStateFlow()
+
+    private val _metronomeRunning = MutableStateFlow(false)
+    val metronomeRunning = _metronomeRunning.asStateFlow()
+
+    private val _metronomeBeat = MutableStateFlow(0)
+    val metronomeBeat = _metronomeBeat.asStateFlow()
+
     // Saved soundfont path
     private val savedSfPath = prefs.getString("sfPath", null)
     private val savedSfFileName = prefs.getString("sfFileName", null)
@@ -252,6 +265,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
                 // Audio output level
                 _outputLevel.value = engine.getPeakLevel()
+
+                // Metronome beat (poll native engine for current beat index)
+                if (_metronomeRunning.value) {
+                    _metronomeBeat.value = engine.getMetronomeBeat()
+                }
             }
         }
     }
@@ -526,6 +544,56 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         engine.setChorus(_chorusVoices.value, _chorusLevel.value, _chorusSpeed.value, _chorusDepth.value, _chorusType.value)
     }
 
+    // --- Metronome ---
+
+    fun setMetronomeBpm(bpm: Int) {
+        val clamped = bpm.coerceIn(40, 240)
+        _metronomeBpm.value = clamped
+        save("metronomeBpm", clamped)
+        engine.setMetronomeBpm(clamped)
+    }
+
+    fun setMetronomeTimeSig(beats: Int) {
+        val clamped = beats.coerceIn(1, 12)
+        _metronomeTimeSig.value = clamped
+        save("metronomeTimeSig", clamped)
+        engine.setMetronomeTimeSig(clamped)
+    }
+
+    private val tapTimestamps = mutableListOf<Long>()
+
+    /**
+     * Record a tap tempo event. Averages the last 4 tap intervals to compute BPM.
+     * Discards taps with >2s gaps (user paused).
+     */
+    fun tapTempo() {
+        val now = System.currentTimeMillis()
+        tapTimestamps.add(now)
+        if (tapTimestamps.size > 4) tapTimestamps.removeAt(0)
+        if (tapTimestamps.size >= 2) {
+            val intervals = tapTimestamps.zipWithNext { a, b -> b - a }
+            if (intervals.all { it in 150..2000 }) {
+                val avgMs = intervals.average()
+                val tapBpm = (60000.0 / avgMs).toInt().coerceIn(40, 240)
+                setMetronomeBpm(tapBpm)
+            }
+        }
+    }
+
+    fun toggleMetronome() {
+        val newState = !_metronomeRunning.value
+        _metronomeRunning.value = newState
+        if (newState) {
+            // Push current settings to engine before starting
+            engine.setMetronomeBpm(_metronomeBpm.value)
+            engine.setMetronomeTimeSig(_metronomeTimeSig.value)
+            engine.startMetronome()
+        } else {
+            engine.stopMetronome()
+            _metronomeBeat.value = 0
+        }
+    }
+
     fun scanSoundFonts() {
         val fonts = mutableListOf<SF2Info>()
 
@@ -635,6 +703,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        engine.stopMetronome()
         midiManager.destroy()
         audioDeviceCallback?.let { cb ->
             getApplication<Application>()

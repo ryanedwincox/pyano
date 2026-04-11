@@ -98,6 +98,29 @@ class FluidSynthEngine {
         return nativeGetPeakLevel(enginePtr)
     }
 
+    // --- Metronome ---
+
+    fun startMetronome() {
+        if (enginePtr != 0L) nativeStartMetronome(enginePtr)
+    }
+
+    fun stopMetronome() {
+        if (enginePtr != 0L) nativeStopMetronome(enginePtr)
+    }
+
+    fun setMetronomeBpm(bpm: Int) {
+        if (enginePtr != 0L) nativeSetMetronomeBpm(enginePtr, bpm)
+    }
+
+    fun setMetronomeTimeSig(beats: Int) {
+        if (enginePtr != 0L) nativeSetMetronomeTimeSig(enginePtr, beats)
+    }
+
+    fun getMetronomeBeat(): Int {
+        if (enginePtr == 0L) return 0
+        return nativeGetMetronomeBeat(enginePtr)
+    }
+
     fun getPresets(sfId: Int): List<SfPreset> {
         if (enginePtr == 0L) return emptyList()
         val raw = nativeGetPresets(enginePtr, sfId)
@@ -174,4 +197,9 @@ class FluidSynthEngine {
     private external fun nativeSetAudioDevice(ptr: Long, deviceId: Int): Boolean
     private external fun nativeGetPeakLevel(ptr: Long): Float
     private external fun nativeGetPresets(ptr: Long, sfId: Int): Array<String>
+    private external fun nativeStartMetronome(ptr: Long)
+    private external fun nativeStopMetronome(ptr: Long)
+    private external fun nativeSetMetronomeBpm(ptr: Long, bpm: Int)
+    private external fun nativeSetMetronomeTimeSig(ptr: Long, beats: Int)
+    private external fun nativeGetMetronomeBeat(ptr: Long): Int
 }

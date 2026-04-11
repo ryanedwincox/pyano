@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <cstring>
 #include <mutex>
+#include <atomic>
 
 extern "C" {
 #include <fluidsynth.h>
@@ -10,6 +11,14 @@ extern "C" {
 #define LOG_TAG "Pyano"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// GM percussion constants for metronome click sounds (channel 9 / GM channel 10)
+static constexpr int kPercussionChannel = 9;
+static constexpr int kDownbeatNote = 76;       // Hi wood block
+static constexpr int kDownbeatVelocity = 120;
+static constexpr int kSubbeatNote = 37;        // Side stick
+static constexpr int kSubbeatVelocity = 100;
+static constexpr int kClickDurationMs = 50;    // Noteoff delay after click onset
 
 class PyanoEngine : public oboe::AudioStreamCallback {
 public:
@@ -23,6 +32,17 @@ public:
 
     // Output level monitoring (peak level per callback)
     std::atomic<float> peakLevel{0.0f};
+
+    // Metronome state (all accessed from RT audio thread — must be atomic)
+    std::atomic<bool> metronomeRunning{false};
+    std::atomic<int> metronomeBpm{120};
+    std::atomic<int> metronomeTimeSigBeats{4};
+    std::atomic<int> metronomeCurrentBeat{0};
+    std::atomic<int> metronomeSampleCounter{0};
+    std::atomic<int> metronomeSamplesPerBeat{0};  // calculated from sampleRate * 60 / bpm
+    // Noteoff scheduling: frames remaining until we send noteoff (-1 = inactive)
+    std::atomic<int> metronomeNoteOffCountdown{-1};
+    std::atomic<int> metronomeLastNote{-1};
 
     bool create(int requestedSampleRate, int requestedBufferSize) {
         sampleRate = requestedSampleRate;
@@ -214,6 +234,116 @@ public:
         return peakLevel.exchange(0.0f);
     }
 
+    // --- Metronome control (called from UI/main thread) ---
+
+    void recalcSamplesPerBeat() {
+        int bpm = metronomeBpm.load(std::memory_order_relaxed);
+        if (bpm <= 0) bpm = 120;
+        // sampleRate * 60 / bpm — integer math, no allocation
+        metronomeSamplesPerBeat.store(sampleRate * 60 / bpm, std::memory_order_relaxed);
+    }
+
+    void startMetronome() {
+        recalcSamplesPerBeat();
+        metronomeSampleCounter.store(0, std::memory_order_relaxed);
+        metronomeCurrentBeat.store(0, std::memory_order_relaxed);
+        metronomeNoteOffCountdown.store(-1, std::memory_order_relaxed);
+        metronomeLastNote.store(-1, std::memory_order_relaxed);
+        metronomeRunning.store(true, std::memory_order_release);
+        LOGI("Metronome started: bpm=%d, timeSig=%d, samplesPerBeat=%d",
+             metronomeBpm.load(), metronomeTimeSigBeats.load(), metronomeSamplesPerBeat.load());
+    }
+
+    void stopMetronome() {
+        metronomeRunning.store(false, std::memory_order_release);
+        // Noteoff cleanup is handled in the audio callback on the next render pass
+        // to avoid racing with a concurrent noteon from the RT thread.
+        LOGI("Metronome stopped");
+    }
+
+    void setMetronomeBpm(int bpm) {
+        metronomeBpm.store(bpm, std::memory_order_relaxed);
+        recalcSamplesPerBeat();
+    }
+
+    void setMetronomeTimeSig(int beats) {
+        metronomeTimeSigBeats.store(beats, std::memory_order_relaxed);
+    }
+
+    int getMetronomeBeat() {
+        return metronomeCurrentBeat.load(std::memory_order_relaxed);
+    }
+
+    // Process metronome clicks for numFrames. Called from RT audio callback — no allocations,
+    // no mutex, no logging. All state accessed via locals cached from atomics.
+    void processMetronomeTick(int numFrames) {
+        bool running = metronomeRunning.load(std::memory_order_acquire);
+
+        if (!running) {
+            // Cleanup: send noteoff for any lingering note when stopped
+            int lastNote = metronomeLastNote.exchange(-1, std::memory_order_relaxed);
+            if (lastNote >= 0) {
+                fluid_synth_noteoff(synth, kPercussionChannel, lastNote);
+            }
+            metronomeNoteOffCountdown.store(-1, std::memory_order_relaxed);
+            return;
+        }
+
+        int spb = metronomeSamplesPerBeat.load(std::memory_order_relaxed);
+        int timeSig = metronomeTimeSigBeats.load(std::memory_order_relaxed);
+        if (spb <= 0 || timeSig <= 0) return;  // guard against division by zero
+
+        // Cache all atomic state into locals for the tight per-sample loop
+        int counter = metronomeSampleCounter.load(std::memory_order_relaxed);
+        int noteOffCount = metronomeNoteOffCountdown.load(std::memory_order_relaxed);
+        int lastNote = metronomeLastNote.load(std::memory_order_relaxed);
+        int beat = metronomeCurrentBeat.load(std::memory_order_relaxed);
+        int noteOffDuration = sampleRate * kClickDurationMs / 1000;
+
+        for (int i = 0; i < numFrames; i++) {
+            // Handle pending noteoff
+            if (noteOffCount >= 0) {
+                noteOffCount--;
+                if (noteOffCount <= 0) {
+                    if (lastNote >= 0) {
+                        fluid_synth_noteoff(synth, kPercussionChannel, lastNote);
+                        lastNote = -1;
+                    }
+                    noteOffCount = -1;
+                }
+            }
+
+            // Beat boundary: trigger click
+            if (counter == 0) {
+                int note = (beat == 0) ? kDownbeatNote : kSubbeatNote;
+                int velocity = (beat == 0) ? kDownbeatVelocity : kSubbeatVelocity;
+
+                // Noteoff any previous click before new noteon
+                if (lastNote >= 0) {
+                    fluid_synth_noteoff(synth, kPercussionChannel, lastNote);
+                }
+
+                fluid_synth_noteon(synth, kPercussionChannel, note, velocity);
+                lastNote = note;
+                noteOffCount = noteOffDuration;
+
+                // Advance beat
+                beat = (beat + 1) % timeSig;
+            }
+
+            counter++;
+            if (counter >= spb) {
+                counter = 0;
+            }
+        }
+
+        // Write locals back to atomics
+        metronomeSampleCounter.store(counter, std::memory_order_relaxed);
+        metronomeNoteOffCountdown.store(noteOffCount, std::memory_order_relaxed);
+        metronomeLastNote.store(lastNote, std::memory_order_relaxed);
+        metronomeCurrentBeat.store(beat, std::memory_order_relaxed);
+    }
+
     // Oboe audio callback — renders FluidSynth audio into output buffer
     oboe::DataCallbackResult onAudioReady(
             oboe::AudioStream* audioStream, void* audioData, int32_t numFrames) override {
@@ -224,6 +354,9 @@ public:
             fluid_synth_write_float(synth, numFrames,
                                     output, 0, 2,   // left: offset 0, stride 2
                                     output, 1, 2);  // right: offset 1, stride 2
+
+            // Metronome tick processing (after FluidSynth render)
+            processMetronomeTick(numFrames);
 
             // Compute peak level for output meter
             float peak = 0.0f;
@@ -357,6 +490,33 @@ int engine_set_audio_device(void* ptr, int deviceId) {
 float engine_get_peak_level(void* ptr) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     return engine ? engine->getPeakLevel() : 0.0f;
+}
+
+// --- Metronome C wrappers ---
+
+void engine_start_metronome(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (engine) engine->startMetronome();
+}
+
+void engine_stop_metronome(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (engine) engine->stopMetronome();
+}
+
+void engine_set_metronome_bpm(void* ptr, int bpm) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (engine) engine->setMetronomeBpm(bpm);
+}
+
+void engine_set_metronome_time_sig(void* ptr, int beats) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (engine) engine->setMetronomeTimeSig(beats);
+}
+
+int engine_get_metronome_beat(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    return engine ? engine->getMetronomeBeat() : 0;
 }
 
 } // extern "C"
