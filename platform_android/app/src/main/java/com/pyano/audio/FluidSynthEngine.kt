@@ -121,6 +121,26 @@ class FluidSynthEngine {
         return nativeGetMetronomeBeat(enginePtr)
     }
 
+    // --- Recording ---
+
+    fun startRecording() {
+        if (enginePtr != 0L) nativeStartRecording(enginePtr)
+    }
+
+    fun stopRecording() {
+        if (enginePtr != 0L) nativeStopRecording(enginePtr)
+    }
+
+    fun readRecordingBuffer(buffer: FloatArray, maxSamples: Int): Int {
+        if (enginePtr == 0L) return 0
+        return nativeReadRecordingBuffer(enginePtr, buffer, maxSamples)
+    }
+
+    fun getRecordingSampleRate(): Int {
+        if (enginePtr == 0L) return 48000
+        return nativeGetRecordingSampleRate(enginePtr)
+    }
+
     fun getPresets(sfId: Int): List<SfPreset> {
         if (enginePtr == 0L) return emptyList()
         val raw = nativeGetPresets(enginePtr, sfId)
@@ -202,4 +222,8 @@ class FluidSynthEngine {
     private external fun nativeSetMetronomeBpm(ptr: Long, bpm: Int)
     private external fun nativeSetMetronomeTimeSig(ptr: Long, beats: Int)
     private external fun nativeGetMetronomeBeat(ptr: Long): Int
+    private external fun nativeStartRecording(ptr: Long)
+    private external fun nativeStopRecording(ptr: Long)
+    private external fun nativeReadRecordingBuffer(ptr: Long, buffer: FloatArray, maxSamples: Int): Int
+    private external fun nativeGetRecordingSampleRate(ptr: Long): Int
 }

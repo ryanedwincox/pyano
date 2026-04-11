@@ -31,6 +31,7 @@ add_library(pyano-native SHARED
 
 target_include_directories(pyano-native PRIVATE
     ${FLUIDSYNTH_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_link_libraries(pyano-native

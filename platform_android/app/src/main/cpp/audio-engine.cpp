@@ -4,6 +4,8 @@
 #include <mutex>
 #include <atomic>
 
+#include "ring-buffer.h"
+
 extern "C" {
 #include <fluidsynth.h>
 }
@@ -32,6 +34,12 @@ public:
 
     // Output level monitoring (peak level per callback)
     std::atomic<float> peakLevel{0.0f};
+
+    // Recording ring buffer: allocated once, reused across recordings
+    // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~23MB)
+    static constexpr size_t kRecordingBufferFloats = 48000 * 2 * 60;
+    SpscRingBuffer<float>* recordingBuffer = nullptr;
+    std::atomic<bool> recordingActive{false};
 
     // Metronome state (all accessed from RT audio thread — must be atomic)
     std::atomic<bool> metronomeRunning{false};
@@ -127,7 +135,10 @@ public:
     }
 
     void destroy() {
+        recordingActive.store(false, std::memory_order_relaxed);
         stopAudio();
+        delete recordingBuffer;
+        recordingBuffer = nullptr;
         std::lock_guard<std::mutex> lock(synthMutex);
         if (synth) {
             delete_fluid_synth(synth);
@@ -232,6 +243,32 @@ public:
 
     float getPeakLevel() {
         return peakLevel.exchange(0.0f);
+    }
+
+    // --- Recording control (called from UI/drain thread) ---
+
+    void startRecording() {
+        if (!recordingBuffer) {
+            recordingBuffer = new SpscRingBuffer<float>(kRecordingBufferFloats);
+        } else {
+            recordingBuffer->reset();
+        }
+        recordingActive.store(true, std::memory_order_release);
+        LOGI("Recording started");
+    }
+
+    void stopRecording() {
+        recordingActive.store(false, std::memory_order_release);
+        LOGI("Recording stopped");
+    }
+
+    int readRecordingBuffer(float* out, int maxFloats) {
+        if (!recordingBuffer) return 0;
+        return static_cast<int>(recordingBuffer->read(out, static_cast<size_t>(maxFloats)));
+    }
+
+    int getRecordingSampleRate() {
+        return sampleRate;
     }
 
     // --- Metronome control (called from UI/main thread) ---
@@ -357,6 +394,11 @@ public:
 
             // Metronome tick processing (after FluidSynth render)
             processMetronomeTick(numFrames);
+
+            // Recording: write rendered audio to ring buffer (RT-safe, no alloc/lock/log)
+            if (recordingActive.load(std::memory_order_acquire) && recordingBuffer) {
+                recordingBuffer->write(output, static_cast<size_t>(numFrames * 2));
+            }
 
             // Compute peak level for output meter
             float peak = 0.0f;
@@ -517,6 +559,28 @@ void engine_set_metronome_time_sig(void* ptr, int beats) {
 int engine_get_metronome_beat(void* ptr) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     return engine ? engine->getMetronomeBeat() : 0;
+}
+
+// --- Recording C wrappers ---
+
+void engine_start_recording(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (engine) engine->startRecording();
+}
+
+void engine_stop_recording(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (engine) engine->stopRecording();
+}
+
+int engine_read_recording_buffer(void* ptr, float* out, int maxFloats) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    return engine ? engine->readRecordingBuffer(out, maxFloats) : 0;
+}
+
+int engine_get_recording_sample_rate(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    return engine ? engine->getRecordingSampleRate() : 48000;
 }
 
 } // extern "C"

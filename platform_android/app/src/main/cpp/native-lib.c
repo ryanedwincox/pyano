@@ -37,6 +37,10 @@ void engine_stop_metronome(void* engine);
 void engine_set_metronome_bpm(void* engine, int bpm);
 void engine_set_metronome_time_sig(void* engine, int beats);
 int engine_get_metronome_beat(void* engine);
+void engine_start_recording(void* engine);
+void engine_stop_recording(void* engine);
+int engine_read_recording_buffer(void* engine, float* out, int maxFloats);
+int engine_get_recording_sample_rate(void* engine);
 
 // JNI functions
 
@@ -200,6 +204,35 @@ Java_com_pyano_audio_FluidSynthEngine_nativeSetMetronomeTimeSig(JNIEnv* env, job
 JNIEXPORT jint JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeGetMetronomeBeat(JNIEnv* env, jobject thiz, jlong ptr) {
     return engine_get_metronome_beat((void*)(intptr_t)ptr);
+}
+
+// --- Recording JNI functions ---
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeStartRecording(JNIEnv* env, jobject thiz, jlong ptr) {
+    engine_start_recording((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeStopRecording(JNIEnv* env, jobject thiz, jlong ptr) {
+    engine_stop_recording((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeReadRecordingBuffer(JNIEnv* env, jobject thiz,
+                                                                 jlong ptr, jfloatArray buffer,
+                                                                 jint maxSamples) {
+    jfloat* buf = (*env)->GetFloatArrayElements(env, buffer, NULL);
+    if (!buf) return 0;
+    int read = engine_read_recording_buffer((void*)(intptr_t)ptr, buf, maxSamples);
+    (*env)->ReleaseFloatArrayElements(env, buffer, buf, 0);
+    return read;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeGetRecordingSampleRate(JNIEnv* env, jobject thiz,
+                                                                    jlong ptr) {
+    return engine_get_recording_sample_rate((void*)(intptr_t)ptr);
 }
 
 #ifdef __cplusplus

@@ -10,8 +10,10 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.pyano.audio.AudioRecorder
 import com.pyano.audio.FluidSynthEngine
 import com.pyano.audio.LoopEngine
+import com.pyano.audio.RecordingInfo
 import com.pyano.audio.MidiEventType
 import com.pyano.audio.SF2Info
 import com.pyano.audio.SF2MetadataReader
@@ -173,6 +175,18 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _loopHasAnyEvents = MutableStateFlow(false)
     val loopHasAnyEvents = _loopHasAnyEvents.asStateFlow()
 
+    // --- Audio Recorder ---
+    val audioRecorder = AudioRecorder(engine, application)
+
+    private val _isAudioRecording = MutableStateFlow(false)
+    val isAudioRecording = _isAudioRecording.asStateFlow()
+
+    private val _recordingDurationSec = MutableStateFlow(0)
+    val recordingDurationSec = _recordingDurationSec.asStateFlow()
+
+    private val _savedRecordings = MutableStateFlow<List<RecordingInfo>>(emptyList())
+    val savedRecordings = _savedRecordings.asStateFlow()
+
     // Saved soundfont path
     private val savedSfPath = prefs.getString("sfPath", null)
     private val savedSfFileName = prefs.getString("sfFileName", null)
@@ -313,6 +327,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 // Metronome beat (poll native engine for current beat index)
                 if (_metronomeRunning.value) {
                     _metronomeBeat.value = engine.getMetronomeBeat()
+                }
+
+                // Recording duration
+                if (_isAudioRecording.value) {
+                    _recordingDurationSec.value = (audioRecorder.recordingDurationMs / 1000).toInt()
                 }
 
                 // Loop station: position + layer counts + auto-stop
@@ -524,6 +543,8 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     fun setSelectedTab(index: Int) {
         _selectedTab.value = index
         save("selectedTab", index)
+        // Refresh recordings list when switching to Recorder tab (index 3)
+        if (index == 3) refreshRecordings()
     }
 
     fun setGain(value: Float) {
@@ -793,6 +814,34 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _loopRecordingLayerIndex.value = loopEngine.recordingLayerIndex
     }
 
+    // --- Audio Recorder ---
+
+    fun startAudioRecording() {
+        if (audioRecorder.isRecording) return
+        audioRecorder.startRecording(viewModelScope)
+        _isAudioRecording.value = true
+        _recordingDurationSec.value = 0
+    }
+
+    fun stopAudioRecording() {
+        if (!audioRecorder.isRecording) return
+        viewModelScope.launch {
+            audioRecorder.stopRecording()
+            _isAudioRecording.value = false
+            _recordingDurationSec.value = 0
+            refreshRecordings()
+        }
+    }
+
+    fun refreshRecordings() {
+        _savedRecordings.value = audioRecorder.getSavedRecordings()
+    }
+
+    fun deleteRecording(path: String) {
+        audioRecorder.deleteRecording(path)
+        refreshRecordings()
+    }
+
     fun scanSoundFonts() {
         val fonts = mutableListOf<SF2Info>()
 
@@ -902,6 +951,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        if (audioRecorder.isRecording) {
+            engine.stopRecording()
+        }
         loopEngine.stopPlayback()
         midiEventHandler?.recordingListener = null
         engine.stopMetronome()
