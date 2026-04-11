@@ -41,6 +41,7 @@ void engine_start_recording(void* engine);
 void engine_stop_recording(void* engine);
 int engine_read_recording_buffer(void* engine, float* out, int maxFloats);
 int engine_get_recording_sample_rate(void* engine);
+int engine_get_recording_overflow(void* engine);
 
 // JNI functions
 
@@ -221,10 +222,10 @@ Java_com_pyano_audio_FluidSynthEngine_nativeStopRecording(JNIEnv* env, jobject t
 JNIEXPORT jint JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeReadRecordingBuffer(JNIEnv* env, jobject thiz,
                                                                  jlong ptr, jfloatArray buffer,
-                                                                 jint maxSamples) {
+                                                                 jint maxFloats) {
     jfloat* buf = (*env)->GetFloatArrayElements(env, buffer, NULL);
     if (!buf) return 0;
-    int read = engine_read_recording_buffer((void*)(intptr_t)ptr, buf, maxSamples);
+    int read = engine_read_recording_buffer((void*)(intptr_t)ptr, buf, maxFloats);
     (*env)->ReleaseFloatArrayElements(env, buffer, buf, 0);
     return read;
 }
@@ -233,6 +234,12 @@ JNIEXPORT jint JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeGetRecordingSampleRate(JNIEnv* env, jobject thiz,
                                                                     jlong ptr) {
     return engine_get_recording_sample_rate((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeGetRecordingOverflow(JNIEnv* env, jobject thiz,
+                                                                   jlong ptr) {
+    return engine_get_recording_overflow((void*)(intptr_t)ptr) ? JNI_TRUE : JNI_FALSE;
 }
 
 #ifdef __cplusplus

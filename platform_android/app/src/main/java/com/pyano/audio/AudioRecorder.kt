@@ -294,6 +294,21 @@ class AudioRecorder(
             ?: emptyList()
     }
 
+    /**
+     * Cancel recording without producing a WAV file. Stops the drain coroutine and cleans up
+     * the temp file. Safe to call from onCleared (synchronous, non-suspend).
+     */
+    fun cancelRecording() {
+        if (!isRecording) return
+        isRecording = false
+        drainJob?.cancel()
+        drainJob = null
+        tempPcmFile?.delete()
+        tempPcmFile = null
+        totalFloatsWritten = 0
+        Log.i(TAG, "Recording cancelled")
+    }
+
     fun deleteRecording(path: String): Boolean {
         val file = File(path)
         if (file.exists()) {

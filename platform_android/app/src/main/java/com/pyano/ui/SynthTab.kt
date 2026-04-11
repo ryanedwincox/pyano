@@ -195,10 +195,8 @@ fun SynthTab(viewModel: PyanoViewModel) {
                         ) {
                             Text("Out", style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(end = 8.dp))
-                            val levelDb = if (outputLevel > 0.0001f) {
-                                (20 * kotlin.math.log10(outputLevel)).coerceIn(-60f, 0f)
-                            } else -60f
-                            val levelFraction = ((levelDb + 60f) / 60f).coerceIn(0f, 1f)
+                            val levelDb = peakToDb(outputLevel)
+                            val levelFraction = peakToFraction(outputLevel)
                             LinearProgressIndicator(
                                 progress = { levelFraction },
                                 modifier = Modifier.weight(1f).height(8.dp),

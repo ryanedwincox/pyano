@@ -36,10 +36,11 @@ public:
     std::atomic<float> peakLevel{0.0f};
 
     // Recording ring buffer: allocated once, reused across recordings
-    // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~23MB)
+    // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
     static constexpr size_t kRecordingBufferFloats = 48000 * 2 * 60;
     SpscRingBuffer<float>* recordingBuffer = nullptr;
     std::atomic<bool> recordingActive{false};
+    std::atomic<bool> recordingOverflow{false};
 
     // Metronome state (all accessed from RT audio thread — must be atomic)
     std::atomic<bool> metronomeRunning{false};
@@ -247,12 +248,17 @@ public:
 
     // --- Recording control (called from UI/drain thread) ---
 
+    bool getRecordingOverflow() {
+        return recordingOverflow.exchange(false, std::memory_order_relaxed);
+    }
+
     void startRecording() {
         if (!recordingBuffer) {
             recordingBuffer = new SpscRingBuffer<float>(kRecordingBufferFloats);
         } else {
             recordingBuffer->reset();
         }
+        recordingOverflow.store(false, std::memory_order_relaxed);
         recordingActive.store(true, std::memory_order_release);
         LOGI("Recording started");
     }
@@ -387,17 +393,21 @@ public:
         auto* output = static_cast<float*>(audioData);
 
         if (synth) {
+            // Metronome tick processing (before render so noteOn events land in this buffer)
+            processMetronomeTick(numFrames);
+
             // FluidSynth renders interleaved stereo float samples
             fluid_synth_write_float(synth, numFrames,
                                     output, 0, 2,   // left: offset 0, stride 2
                                     output, 1, 2);  // right: offset 1, stride 2
 
-            // Metronome tick processing (after FluidSynth render)
-            processMetronomeTick(numFrames);
-
             // Recording: write rendered audio to ring buffer (RT-safe, no alloc/lock/log)
             if (recordingActive.load(std::memory_order_acquire) && recordingBuffer) {
-                recordingBuffer->write(output, static_cast<size_t>(numFrames * 2));
+                size_t expected = static_cast<size_t>(numFrames * 2);
+                size_t written = recordingBuffer->write(output, expected);
+                if (written < expected) {
+                    recordingOverflow.store(true, std::memory_order_relaxed);
+                }
             }
 
             // Compute peak level for output meter
@@ -581,6 +591,11 @@ int engine_read_recording_buffer(void* ptr, float* out, int maxFloats) {
 int engine_get_recording_sample_rate(void* ptr) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     return engine ? engine->getRecordingSampleRate() : 48000;
+}
+
+int engine_get_recording_overflow(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    return engine && engine->getRecordingOverflow() ? 1 : 0;
 }
 
 } // extern "C"

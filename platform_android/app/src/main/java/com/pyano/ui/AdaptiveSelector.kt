@@ -1,3 +1,4 @@
+// AdaptiveSelector: Generic picker that adapts between chips (few items) and dropdown (many items). NOT concerned with item semantics.
 package com.pyano.ui
 
 import androidx.compose.foundation.BorderStroke

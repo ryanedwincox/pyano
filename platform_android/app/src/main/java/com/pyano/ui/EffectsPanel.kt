@@ -6,7 +6,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlin.math.log10
 import kotlin.math.roundToInt
+
+/** Convert raw peak amplitude (0..∞) to dB, clamped to [-60, 0]. */
+fun peakToDb(peak: Float): Float =
+    if (peak > 0.0001f) (20 * log10(peak)).coerceIn(-60f, 0f) else -60f
+
+/** Convert raw peak amplitude to 0..1 fraction suitable for LinearProgressIndicator. */
+fun peakToFraction(peak: Float): Float =
+    ((peakToDb(peak) + 60f) / 60f).coerceIn(0f, 1f)
 
 @Composable
 fun LabeledSlider(

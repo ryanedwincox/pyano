@@ -55,10 +55,10 @@ fun PyanoApp(viewModel: PyanoViewModel) {
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (selectedTab) {
-                0 -> SynthTab(viewModel)
-                1 -> MetronomeTab(viewModel)
-                2 -> LoopStationTab(viewModel)
-                3 -> RecorderTab(viewModel)
+                AppTab.Synth.ordinal -> SynthTab(viewModel)
+                AppTab.Metronome.ordinal -> MetronomeTab(viewModel)
+                AppTab.Loops.ordinal -> LoopStationTab(viewModel)
+                AppTab.Recorder.ordinal -> RecorderTab(viewModel)
                 else -> SynthTab(viewModel) // Fallback for corrupt prefs
             }
         }

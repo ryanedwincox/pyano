@@ -15,8 +15,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pyano.PyanoViewModel
 import com.pyano.audio.LoopEngine
-import com.pyano.PyanoViewModel.Companion.BPM_MAX
-import com.pyano.PyanoViewModel.Companion.BPM_MIN
 
 private val barOptions = listOf(1, 2, 4, 8)
 
@@ -45,55 +43,9 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
                 modifier = Modifier.padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // BPM display with +/- buttons
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    FilledTonalButton(
-                        onClick = { viewModel.setLoopBpm(loopBpm - 1) },
-                        modifier = Modifier.size(48.dp),
-                        contentPadding = PaddingValues(0.dp),
-                        enabled = !loopSyncBpm
-                    ) {
-                        Text("\u2212", style = MaterialTheme.typography.titleLarge)
-                    }
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    ) {
-                        Text(
-                            text = "$loopBpm",
-                            style = MaterialTheme.typography.displayLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "BPM",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    FilledTonalButton(
-                        onClick = { viewModel.setLoopBpm(loopBpm + 1) },
-                        modifier = Modifier.size(48.dp),
-                        contentPadding = PaddingValues(0.dp),
-                        enabled = !loopSyncBpm
-                    ) {
-                        Text("+", style = MaterialTheme.typography.titleLarge)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Slider(
-                    value = loopBpm.toFloat(),
-                    onValueChange = { viewModel.setLoopBpm(it.toInt()) },
-                    valueRange = BPM_MIN.toFloat()..BPM_MAX.toFloat(),
-                    modifier = Modifier.fillMaxWidth(),
+                BpmControl(
+                    bpm = loopBpm,
+                    onBpmChange = { viewModel.setLoopBpm(it) },
                     enabled = !loopSyncBpm
                 )
 

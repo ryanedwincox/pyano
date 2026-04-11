@@ -104,10 +104,7 @@ private fun RecordControlCard(
 
             // Level meter
             if (isRecording) {
-                val levelDb = if (outputLevel > 0.0001f) {
-                    (20 * kotlin.math.log10(outputLevel)).coerceIn(-60f, 0f)
-                } else -60f
-                val levelFraction = ((levelDb + 60f) / 60f).coerceIn(0f, 1f)
+                val levelFraction = peakToFraction(outputLevel)
 
                 LinearProgressIndicator(
                     progress = { levelFraction },

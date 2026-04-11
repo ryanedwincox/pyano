@@ -131,14 +131,19 @@ class FluidSynthEngine {
         if (enginePtr != 0L) nativeStopRecording(enginePtr)
     }
 
-    fun readRecordingBuffer(buffer: FloatArray, maxSamples: Int): Int {
+    fun readRecordingBuffer(buffer: FloatArray, maxFloats: Int): Int {
         if (enginePtr == 0L) return 0
-        return nativeReadRecordingBuffer(enginePtr, buffer, maxSamples)
+        return nativeReadRecordingBuffer(enginePtr, buffer, maxFloats)
     }
 
     fun getRecordingSampleRate(): Int {
         if (enginePtr == 0L) return 48000
         return nativeGetRecordingSampleRate(enginePtr)
+    }
+
+    fun getRecordingOverflow(): Boolean {
+        if (enginePtr == 0L) return false
+        return nativeGetRecordingOverflow(enginePtr)
     }
 
     fun getPresets(sfId: Int): List<SfPreset> {
@@ -224,6 +229,7 @@ class FluidSynthEngine {
     private external fun nativeGetMetronomeBeat(ptr: Long): Int
     private external fun nativeStartRecording(ptr: Long)
     private external fun nativeStopRecording(ptr: Long)
-    private external fun nativeReadRecordingBuffer(ptr: Long, buffer: FloatArray, maxSamples: Int): Int
+    private external fun nativeReadRecordingBuffer(ptr: Long, buffer: FloatArray, maxFloats: Int): Int
     private external fun nativeGetRecordingSampleRate(ptr: Long): Int
+    private external fun nativeGetRecordingOverflow(ptr: Long): Boolean
 }

@@ -45,9 +45,6 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         // behaves consistently across instruments (see applyChannelSendDefaults).
         private const val REVERB_SEND_DEFAULT = 96
         private const val CHORUS_SEND_DEFAULT = 64
-        /** BPM clamping range — single source of truth for ViewModel + LoopEngine. */
-        const val BPM_MIN = 40
-        const val BPM_MAX = 240
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
@@ -636,7 +633,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     // --- Metronome ---
 
     fun setMetronomeBpm(bpm: Int) {
-        val clamped = bpm.coerceIn(BPM_MIN, BPM_MAX)
+        val clamped = bpm.coerceIn(LoopEngine.BPM_MIN, LoopEngine.BPM_MAX)
         _metronomeBpm.value = clamped
         save("metronomeBpm", clamped)
         engine.setMetronomeBpm(clamped)
@@ -670,7 +667,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             val intervals = tapTimestamps.zipWithNext { a, b -> b - a }
             if (intervals.all { it in 150..2000 }) {
                 val avgMs = intervals.average()
-                val tapBpm = (60000.0 / avgMs).toInt().coerceIn(BPM_MIN, BPM_MAX)
+                val tapBpm = (60000.0 / avgMs).toInt().coerceIn(LoopEngine.BPM_MIN, LoopEngine.BPM_MAX)
                 setMetronomeBpm(tapBpm)
             }
         }
@@ -775,7 +772,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setLoopBpm(bpm: Int) {
-        val clamped = bpm.coerceIn(BPM_MIN, BPM_MAX)
+        val clamped = bpm.coerceIn(LoopEngine.BPM_MIN, LoopEngine.BPM_MAX)
         _loopBpm.value = clamped
         save("loopBpm", clamped)
         loopEngine.setBpm(clamped)
@@ -952,6 +949,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         if (audioRecorder.isRecording) {
+            audioRecorder.cancelRecording()
             engine.stopRecording()
         }
         loopEngine.stopPlayback()

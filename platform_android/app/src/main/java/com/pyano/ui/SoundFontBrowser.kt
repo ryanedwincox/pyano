@@ -1,3 +1,4 @@
+// SoundFontBrowser: Bottom-sheet browser for discovering, importing, and selecting SoundFont files. NOT concerned with synth engine.
 package com.pyano.ui
 
 import androidx.compose.foundation.clickable

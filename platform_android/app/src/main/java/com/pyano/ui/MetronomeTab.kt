@@ -14,7 +14,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.pyano.PyanoViewModel
@@ -46,54 +45,9 @@ fun MetronomeTab(viewModel: PyanoViewModel) {
                 modifier = Modifier.padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // BPM number with +/- buttons
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    FilledTonalButton(
-                        onClick = { viewModel.setMetronomeBpm(bpm - 1) },
-                        modifier = Modifier.size(48.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text("−", style = MaterialTheme.typography.titleLarge)
-                    }
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    ) {
-                        Text(
-                            text = "$bpm",
-                            style = MaterialTheme.typography.displayLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "BPM",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    FilledTonalButton(
-                        onClick = { viewModel.setMetronomeBpm(bpm + 1) },
-                        modifier = Modifier.size(48.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text("+", style = MaterialTheme.typography.titleLarge)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // BPM Slider
-                Slider(
-                    value = bpm.toFloat(),
-                    onValueChange = { viewModel.setMetronomeBpm(it.toInt()) },
-                    valueRange = 40f..240f,
-                    modifier = Modifier.fillMaxWidth()
+                BpmControl(
+                    bpm = bpm,
+                    onBpmChange = { viewModel.setMetronomeBpm(it) }
                 )
             }
         }
