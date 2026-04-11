@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +25,8 @@ fun SoundFontBrowser(
     val soundFonts by viewModel.availableSoundFonts.collectAsState()
     val currentSoundFont by viewModel.soundFontName.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val favorites by viewModel.favoriteSoundFonts.collectAsState()
+    val favoritePaths = remember(favorites) { favorites.map { it.path }.toSet() }
 
     LaunchedEffect(Unit) {
         viewModel.scanSoundFonts()
@@ -85,6 +89,8 @@ fun SoundFontBrowser(
                         SoundFontCard(
                             info = sf,
                             isActive = sf.name == currentSoundFont,
+                            isFavorite = sf.path in favoritePaths,
+                            onToggleFavorite = { viewModel.toggleFavoriteSoundFont(sf) },
                             onClick = {
                                 viewModel.loadSoundFontByPath(sf.path, sf.fileName)
                                 onDismiss()
@@ -101,6 +107,8 @@ fun SoundFontBrowser(
 fun SoundFontCard(
     info: SF2Info,
     isActive: Boolean,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
     onClick: () -> Unit
 ) {
     Card(
@@ -119,6 +127,19 @@ fun SoundFontCard(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
+                    tint = if (isFavorite) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     info.name,

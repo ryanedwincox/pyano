@@ -1,6 +1,7 @@
 package com.pyano
 
 import android.app.Application
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.midi.MidiDevice
@@ -20,7 +21,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class AudioOutput(val id: Int, val name: String, val type: Int)
+data class AudioOutput(val id: Int, val name: String, val type: Int) {
+    /**
+     * Stable identifier used to remember a chosen output across reconnects and reboots.
+     * AudioDeviceInfo.id is reassigned on every enumeration, so we key by type+name instead.
+     * The synthetic "Default" entry (id=0) gets a fixed key so it's also stable.
+     */
+    val preferredKey: String
+        get() = if (id == 0) "default" else "$type|$name"
+}
 
 class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
@@ -38,6 +47,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val midiManager = MidiDeviceManager(application)
     private var midiEventHandler: MidiEventHandler? = null
     private var midiDevice: MidiDevice? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
 
     // UI State
     private val _soundFontName = MutableStateFlow(DEFAULT_SF)
@@ -45,6 +55,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _availableSoundFonts = MutableStateFlow<List<SF2Info>>(emptyList())
     val availableSoundFonts = _availableSoundFonts.asStateFlow()
+
+    private val _favoriteSoundFonts = MutableStateFlow<List<SF2Info>>(emptyList())
+    val favoriteSoundFonts = _favoriteSoundFonts.asStateFlow()
 
     private val _midiDevices = MutableStateFlow<List<MidiDeviceInfo>>(emptyList())
     val midiDevices = _midiDevices.asStateFlow()
@@ -112,12 +125,18 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val savedSfPath = prefs.getString("sfPath", null)
     private val savedSfFileName = prefs.getString("sfFileName", null)
     private val savedPresetIndex = prefs.getInt("presetIndex", 0)
-    private val savedAudioOutputId = prefs.getInt("audioOutputId", 0)
+    // Stable name+type key (preferred). Falls back to legacy id-based pref for one migration cycle.
+    private val savedAudioOutputKey = prefs.getString("audioOutputKey", null)
+    private val savedMidiDeviceName = prefs.getString("midiDeviceName", null)
 
     private fun save(key: String, value: Float) = prefs.edit().putFloat(key, value).apply()
     private fun save(key: String, value: Int) = prefs.edit().putInt(key, value).apply()
     private fun save(key: String, value: Boolean) = prefs.edit().putBoolean(key, value).apply()
     private fun save(key: String, value: String) = prefs.edit().putString(key, value).apply()
+
+    // Tab navigation
+    private val _selectedTab = MutableStateFlow(prefs.getInt("selectedTab", 0))
+    val selectedTab = _selectedTab.asStateFlow()
 
     private val _isLoading = MutableStateFlow(true)
     val isLoading = _isLoading.asStateFlow()
@@ -187,7 +206,18 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         midiEventHandler = MidiEventHandler(engine)
         refreshMidiDevices()
         midiManager.registerCallback(
-            onDeviceAdded = { refreshMidiDevices() },
+            onDeviceAdded = { info ->
+                refreshMidiDevices()
+                // Sticky reconnect: if nothing is currently bound, and either the new
+                // device matches our remembered one or we have no remembered device,
+                // bind it. Never yank an already-active connection.
+                if (_selectedMidiDevice.value == null) {
+                    val name = midiManager.getDeviceName(info)
+                    if (savedMidiDeviceName == null || savedMidiDeviceName == name) {
+                        connectMidiDevice(info)
+                    }
+                }
+            },
             onDeviceRemoved = { info ->
                 if (_selectedMidiDevice.value?.id == info.id) {
                     disconnectMidi()
@@ -196,20 +226,19 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             }
         )
 
-        // Auto-connect first available device
+        // Auto-connect: prefer the saved device by name, else first available.
         val devices = midiManager.getDevices()
-        if (devices.isNotEmpty()) {
-            connectMidiDevice(devices[0])
+        val preferredMidi = savedMidiDeviceName?.let { saved ->
+            devices.firstOrNull { midiManager.getDeviceName(it) == saved }
+        } ?: devices.firstOrNull()
+        if (preferredMidi != null) {
+            connectMidiDevice(preferredMidi)
         }
 
-        // Enumerate audio outputs and restore saved selection
+        // Enumerate audio outputs and restore saved selection by stable key.
         refreshAudioOutputs()
-        if (savedAudioOutputId != 0) {
-            val saved = _audioOutputs.value.find { it.id == savedAudioOutputId }
-            if (saved != null) {
-                setAudioOutput(saved)
-            }
-        }
+        tryRebindPreferredAudio()
+        registerAudioDeviceCallback()
         maxSystemMediaVolume("startup")
 
         // Start activity monitor polling
@@ -257,9 +286,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAudioOutput(output: AudioOutput) {
         _selectedAudioOutput.value = output
-        save("audioOutputId", output.id)
+        save("audioOutputKey", output.preferredKey)
         engine.setAudioDevice(output.id)
-        Log.i(TAG, "Set audio output: ${output.name} (id=${output.id})")
+        Log.i(TAG, "Set audio output: ${output.name} (id=${output.id}, key=${output.preferredKey})")
 
         // Always max out system media volume on output change. Pyano expects to
         // drive the device at unity and have the user attenuate at the speaker /
@@ -269,6 +298,46 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             maxSystemMediaVolume("output=${output.name}")
         }
     }
+
+    /**
+     * If the user has a remembered audio output, find it in the current device list
+     * (by stable name+type key) and bind to it. Falls back to the synthetic Default
+     * if the remembered device isn't currently present.
+     */
+    private fun tryRebindPreferredAudio() {
+        val key = savedAudioOutputKey ?: _selectedAudioOutput.value?.preferredKey ?: return
+        val match = _audioOutputs.value.firstOrNull { it.preferredKey == key }
+        if (match != null && match.preferredKey != _selectedAudioOutput.value?.preferredKey) {
+            setAudioOutput(match)
+        }
+    }
+
+    private fun registerAudioDeviceCallback() {
+        val audioManager = getApplication<Application>()
+            .getSystemService(AudioManager::class.java)
+        audioDeviceCallback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                refreshAudioOutputs()
+                tryRebindPreferredAudio()
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                refreshAudioOutputs()
+                // If the active output went away, fall back to the Default entry.
+                val current = _selectedAudioOutput.value ?: return
+                if (_audioOutputs.value.none { it.preferredKey == current.preferredKey }) {
+                    _audioOutputs.value.firstOrNull()?.let { fallback ->
+                        _selectedAudioOutput.value = fallback
+                        engine.setAudioDevice(fallback.id)
+                        Log.i(TAG, "Active audio output removed, falling back to ${fallback.name}")
+                    }
+                }
+            }
+        }
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+    }
+
+    fun midiDeviceName(info: MidiDeviceInfo): String = midiManager.getDeviceName(info)
 
     private fun maxSystemMediaVolume(reason: String) {
         try {
@@ -306,7 +375,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             if (device != null) {
                 midiDevice = device
                 _selectedMidiDevice.value = info
-                _midiStatus.value = midiManager.getDeviceName(info)
+                val name = midiManager.getDeviceName(info)
+                _midiStatus.value = name
+                save("midiDeviceName", name)
 
                 // Connect to all output ports (keyboard data comes from output ports)
                 var connected = false
@@ -362,6 +433,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private fun applyChannelSendDefaults(channel: Int) {
         engine.cc(channel, 91, REVERB_SEND_DEFAULT)
         engine.cc(channel, 93, CHORUS_SEND_DEFAULT)
+    }
+
+    fun setSelectedTab(index: Int) {
+        _selectedTab.value = index
+        save("selectedTab", index)
     }
 
     fun setGain(value: Float) {
@@ -477,6 +553,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         fonts.sortWith(compareByDescending<SF2Info> { it.isBundled }.thenBy { it.name.lowercase() })
 
         _availableSoundFonts.value = fonts
+        refreshFavorites()
         Log.i(TAG, "Scanned ${fonts.size} soundfonts")
     }
 
@@ -531,9 +608,40 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         scanSoundFonts()
     }
 
+    fun toggleFavoriteSoundFont(sf: SF2Info) {
+        val paths = getFavoritePaths().toMutableList()
+        if (sf.path in paths) {
+            paths.remove(sf.path)
+        } else {
+            if (paths.size >= 4) return
+            paths.add(sf.path)
+        }
+        save("favoriteSfPaths", paths.joinToString("\n"))
+        refreshFavorites()
+    }
+
+    fun isFavoriteSoundFont(path: String): Boolean = path in getFavoritePaths()
+
+    private fun getFavoritePaths(): List<String> {
+        val raw = prefs.getString("favoriteSfPaths", null) ?: return emptyList()
+        return raw.split("\n").filter { it.isNotBlank() }
+    }
+
+    private fun refreshFavorites() {
+        val paths = getFavoritePaths()
+        val available = _availableSoundFonts.value.associateBy { it.path }
+        _favoriteSoundFonts.value = paths.mapNotNull { available[it] }
+    }
+
     override fun onCleared() {
         super.onCleared()
         midiManager.destroy()
+        audioDeviceCallback?.let { cb ->
+            getApplication<Application>()
+                .getSystemService(AudioManager::class.java)
+                .unregisterAudioDeviceCallback(cb)
+        }
+        audioDeviceCallback = null
         engine.stopAudio()
         engine.destroy()
     }
