@@ -11,11 +11,14 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pyano.audio.FluidSynthEngine
+import com.pyano.audio.LoopEngine
+import com.pyano.audio.MidiEventType
 import com.pyano.audio.SF2Info
 import com.pyano.audio.SF2MetadataReader
 import com.pyano.audio.SfPreset
 import com.pyano.midi.MidiDeviceManager
 import com.pyano.midi.MidiEventHandler
+import com.pyano.midi.MidiRecordingListener
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +43,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         // behaves consistently across instruments (see applyChannelSendDefaults).
         private const val REVERB_SEND_DEFAULT = 96
         private const val CHORUS_SEND_DEFAULT = 64
+        /** BPM clamping range — single source of truth for ViewModel + LoopEngine. */
+        const val BPM_MIN = 40
+        const val BPM_MAX = 240
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
@@ -133,6 +139,39 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _metronomeBeat = MutableStateFlow(0)
     val metronomeBeat = _metronomeBeat.asStateFlow()
+
+    // --- Loop Station ---
+    private val loopEngine = LoopEngine(engine)
+
+    private val _loopRecording = MutableStateFlow(false)
+    val loopRecording = _loopRecording.asStateFlow()
+
+    private val _loopPlaying = MutableStateFlow(false)
+    val loopPlaying = _loopPlaying.asStateFlow()
+
+    private val _loopBpm = MutableStateFlow(prefs.getInt("loopBpm", 120))
+    val loopBpm = _loopBpm.asStateFlow()
+
+    private val _loopLengthBars = MutableStateFlow(prefs.getInt("loopLengthBars", 4))
+    val loopLengthBars = _loopLengthBars.asStateFlow()
+
+    private val _loopLayerCounts = MutableStateFlow(List(LoopEngine.MAX_LAYERS) { 0 })
+    val loopLayerCounts = _loopLayerCounts.asStateFlow()
+
+    private val _loopPosition = MutableStateFlow(0f)
+    val loopPosition = _loopPosition.asStateFlow()
+
+    private val _loopCountIn = MutableStateFlow(prefs.getBoolean("loopCountIn", false))
+    val loopCountIn = _loopCountIn.asStateFlow()
+
+    private val _loopSyncBpm = MutableStateFlow(prefs.getBoolean("loopSyncBpm", true))
+    val loopSyncBpm = _loopSyncBpm.asStateFlow()
+
+    private val _loopRecordingLayerIndex = MutableStateFlow(-1)
+    val loopRecordingLayerIndex = _loopRecordingLayerIndex.asStateFlow()
+
+    private val _loopHasAnyEvents = MutableStateFlow(false)
+    val loopHasAnyEvents = _loopHasAnyEvents.asStateFlow()
 
     // Saved soundfont path
     private val savedSfPath = prefs.getString("sfPath", null)
@@ -254,6 +293,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         registerAudioDeviceCallback()
         maxSystemMediaVolume("startup")
 
+        // Initialize loop engine with saved/current settings
+        loopEngine.setBpm(_loopBpm.value)
+        loopEngine.setLoopLengthBars(_loopLengthBars.value)
+        loopEngine.setTimeSigBeats(_metronomeTimeSig.value)
+
         // Start activity monitor polling
         viewModelScope.launch {
             while (true) {
@@ -269,6 +313,30 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 // Metronome beat (poll native engine for current beat index)
                 if (_metronomeRunning.value) {
                     _metronomeBeat.value = engine.getMetronomeBeat()
+                }
+
+                // Loop station: position + layer counts + auto-stop
+                if (loopEngine.isPlaying || loopEngine.isRecording) {
+                    val duration = loopEngine.loopDurationNs
+                    if (loopEngine.isPlaying) {
+                        _loopPosition.value = if (duration > 0) {
+                            (loopEngine.currentPositionNs.toFloat() / duration).coerceIn(0f, 1f)
+                        } else 0f
+                    } else if (loopEngine.isRecording) {
+                        // Recording-only mode: compute position from recording elapsed time
+                        _loopPosition.value = if (duration > 0) {
+                            ((loopEngine.getRecordingPositionNs() % duration).toFloat() / duration).coerceIn(0f, 1f)
+                        } else 0f
+                    }
+                    _loopPlaying.value = loopEngine.isPlaying
+                    _loopRecording.value = loopEngine.isRecording
+
+                    // Auto-stop recording at loop boundary when overdubbing
+                    if (loopEngine.checkAutoStopRecording()) {
+                        _loopRecording.value = false
+                        _loopRecordingLayerIndex.value = -1
+                        refreshLoopLayerCounts()
+                    }
                 }
             }
         }
@@ -547,10 +615,16 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     // --- Metronome ---
 
     fun setMetronomeBpm(bpm: Int) {
-        val clamped = bpm.coerceIn(40, 240)
+        val clamped = bpm.coerceIn(BPM_MIN, BPM_MAX)
         _metronomeBpm.value = clamped
         save("metronomeBpm", clamped)
         engine.setMetronomeBpm(clamped)
+        // Sync to loop engine if BPM sync is enabled
+        if (_loopSyncBpm.value && _loopBpm.value != clamped) {
+            _loopBpm.value = clamped
+            save("loopBpm", clamped)
+            loopEngine.setBpm(clamped)
+        }
     }
 
     fun setMetronomeTimeSig(beats: Int) {
@@ -558,6 +632,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _metronomeTimeSig.value = clamped
         save("metronomeTimeSig", clamped)
         engine.setMetronomeTimeSig(clamped)
+        loopEngine.setTimeSigBeats(clamped)
     }
 
     private val tapTimestamps = mutableListOf<Long>()
@@ -574,7 +649,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             val intervals = tapTimestamps.zipWithNext { a, b -> b - a }
             if (intervals.all { it in 150..2000 }) {
                 val avgMs = intervals.average()
-                val tapBpm = (60000.0 / avgMs).toInt().coerceIn(40, 240)
+                val tapBpm = (60000.0 / avgMs).toInt().coerceIn(BPM_MIN, BPM_MAX)
                 setMetronomeBpm(tapBpm)
             }
         }
@@ -592,6 +667,130 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             engine.stopMetronome()
             _metronomeBeat.value = 0
         }
+    }
+
+    // --- Loop Station ---
+
+    fun startLoopRecording() {
+        if (loopEngine.isRecording) return
+
+        // Wire up recording listener
+        midiEventHandler?.recordingListener = object : MidiRecordingListener {
+            override fun onMidiEvent(channel: Int, type: MidiEventType, note: Int, velocity: Int) {
+                loopEngine.recordEvent(channel, type, note, velocity)
+            }
+        }
+
+        if (_loopCountIn.value && !loopEngine.isPlaying) {
+            // Count-in: start metronome for 1 bar, then begin recording
+            val metronomeWasRunning = _metronomeRunning.value
+            if (!metronomeWasRunning) {
+                // Push loop BPM to metronome for count-in
+                engine.setMetronomeBpm(_loopBpm.value)
+                engine.setMetronomeTimeSig(loopEngine.timeSigBeats)
+                engine.startMetronome()
+                _metronomeRunning.value = true
+            }
+            val countInDurationMs = (loopEngine.timeSigBeats.toLong() * 60_000L) / _loopBpm.value
+            viewModelScope.launch {
+                delay(countInDurationMs)
+                // Only stop metronome if we started it for count-in
+                if (!metronomeWasRunning && _metronomeRunning.value) {
+                    engine.stopMetronome()
+                    _metronomeRunning.value = false
+                    _metronomeBeat.value = 0
+                }
+                doStartRecording()
+            }
+        } else {
+            doStartRecording()
+        }
+    }
+
+    private fun doStartRecording() {
+        val idx = loopEngine.startRecording()
+        if (idx >= 0) {
+            _loopRecording.value = true
+            _loopRecordingLayerIndex.value = idx
+            refreshLoopLayerCounts()
+        }
+    }
+
+    fun stopLoopRecording() {
+        loopEngine.stopRecording()
+        midiEventHandler?.recordingListener = null
+        _loopRecording.value = false
+        _loopRecordingLayerIndex.value = -1
+        refreshLoopLayerCounts()
+    }
+
+    fun toggleLoopPlayback() {
+        if (loopEngine.isPlaying) {
+            loopEngine.stopPlayback()
+            _loopPlaying.value = false
+            _loopPosition.value = 0f
+        } else {
+            loopEngine.startPlayback(viewModelScope)
+            _loopPlaying.value = true
+        }
+    }
+
+    fun clearLoopLayer(index: Int) {
+        loopEngine.clearLayer(index)
+        refreshLoopLayerCounts()
+    }
+
+    fun clearAllLoops() {
+        val wasPlaying = loopEngine.isPlaying
+        val wasRecording = loopEngine.isRecording
+        if (wasRecording) stopLoopRecording()
+        if (wasPlaying) {
+            loopEngine.stopPlayback()
+            _loopPlaying.value = false
+            _loopPosition.value = 0f
+        }
+        loopEngine.clearAll()
+        refreshLoopLayerCounts()
+    }
+
+    fun setLoopBpm(bpm: Int) {
+        val clamped = bpm.coerceIn(BPM_MIN, BPM_MAX)
+        _loopBpm.value = clamped
+        save("loopBpm", clamped)
+        loopEngine.setBpm(clamped)
+        // Sync to metronome if enabled
+        if (_loopSyncBpm.value) {
+            setMetronomeBpm(clamped)
+        }
+    }
+
+    fun setLoopLengthBars(bars: Int) {
+        _loopLengthBars.value = bars
+        save("loopLengthBars", bars)
+        loopEngine.setLoopLengthBars(bars)
+    }
+
+    fun toggleLoopCountIn() {
+        val newVal = !_loopCountIn.value
+        _loopCountIn.value = newVal
+        save("loopCountIn", newVal)
+    }
+
+    fun toggleLoopSyncBpm() {
+        val newVal = !_loopSyncBpm.value
+        _loopSyncBpm.value = newVal
+        save("loopSyncBpm", newVal)
+        if (newVal) {
+            // Sync loop BPM from metronome
+            setLoopBpm(_metronomeBpm.value)
+        }
+    }
+
+    private fun refreshLoopLayerCounts() {
+        val counts = List(LoopEngine.MAX_LAYERS) { loopEngine.getLayerEventCount(it) }
+        _loopLayerCounts.value = counts
+        _loopHasAnyEvents.value = counts.any { it > 0 }
+        _loopRecordingLayerIndex.value = loopEngine.recordingLayerIndex
     }
 
     fun scanSoundFonts() {
@@ -703,6 +902,8 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        loopEngine.stopPlayback()
+        midiEventHandler?.recordingListener = null
         engine.stopMetronome()
         midiManager.destroy()
         audioDeviceCallback?.let { cb ->

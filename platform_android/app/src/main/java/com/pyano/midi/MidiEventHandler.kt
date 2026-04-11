@@ -1,14 +1,25 @@
+// MidiEventHandler: Parses raw MIDI byte streams and dispatches to FluidSynth + optional recording listener.
+// NOT concerned with: loop logic, UI state, synth engine configuration.
 package com.pyano.midi
 
 import android.media.midi.MidiReceiver
 import android.util.Log
 import com.pyano.audio.FluidSynthEngine
+import com.pyano.audio.MidiEventType
+
+/** Callback for recording live MIDI events. Set on [MidiEventHandler.recordingListener]. */
+interface MidiRecordingListener {
+    fun onMidiEvent(channel: Int, type: MidiEventType, note: Int, velocity: Int)
+}
 
 class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
     @Volatile var lastEventTimeMs: Long = 0L
         private set
     @Volatile var activeNoteCount: Int = 0
         private set
+
+    /** When non-null, every NoteOn/NoteOff/CC event is forwarded here for loop recording. */
+    @Volatile var recordingListener: MidiRecordingListener? = null
 
     // Running status — last channel-voice status byte seen (for MIDI running status support)
     private var runningStatus: Int = 0
@@ -48,9 +59,11 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                     if (velocity > 0) {
                         engine.noteOn(channel, note, velocity)
                         activeNoteCount++
+                        recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_ON, note, velocity)
                     } else {
                         engine.noteOff(channel, note)
                         if (activeNoteCount > 0) activeNoteCount--
+                        recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_OFF, note, 0)
                     }
                     pos += 2
                 }
@@ -59,6 +72,7 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                     val note = data[pos].toInt() and 0x7F
                     engine.noteOff(channel, note)
                     if (activeNoteCount > 0) activeNoteCount--
+                    recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_OFF, note, 0)
                     pos += 2
                 }
                 0xB0 -> { // Control Change (2 data bytes)
@@ -67,6 +81,7 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                     val value = data[pos + 1].toInt() and 0x7F
                     if (ctrl != 7 && ctrl != 11) {
                         engine.cc(channel, ctrl, value)
+                        recordingListener?.onMidiEvent(channel, MidiEventType.CONTROL_CHANGE, ctrl, value)
                     }
                     pos += 2
                 }
