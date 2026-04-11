@@ -298,6 +298,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
         _isLoading.value = false
 
+        // Populate the soundfont list (and derived favorites) so the Synth tab
+        // shows them on first open — MainActivity only rescans after a
+        // permission grant, which doesn't fire when permission is already held.
+        scanSoundFonts()
+
         // Set up MIDI device monitoring
         midiEventHandler = MidiEventHandler(engine)
         refreshMidiDevices()
