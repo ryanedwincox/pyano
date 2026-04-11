@@ -121,6 +121,19 @@ class FluidSynthEngine {
         return nativeGetMetronomeBeat(enginePtr)
     }
 
+    fun setMetronomeClickNotes(downbeatNote: Int, subbeatNote: Int) {
+        if (enginePtr != 0L) nativeSetMetronomeClickNotes(enginePtr, downbeatNote, subbeatNote)
+    }
+
+    fun setMetronomeVolume(volume: Float) {
+        if (enginePtr != 0L) nativeSetMetronomeVolume(enginePtr, volume)
+    }
+
+    fun loadMetronomeDrumKit(path: String): Int {
+        if (enginePtr == 0L) return -1
+        return nativeLoadMetronomeDrumKit(enginePtr, path)
+    }
+
     // --- Recording ---
 
     fun startRecording() {
@@ -227,6 +240,9 @@ class FluidSynthEngine {
     private external fun nativeSetMetronomeBpm(ptr: Long, bpm: Int)
     private external fun nativeSetMetronomeTimeSig(ptr: Long, beats: Int)
     private external fun nativeGetMetronomeBeat(ptr: Long): Int
+    private external fun nativeSetMetronomeClickNotes(ptr: Long, downbeatNote: Int, subbeatNote: Int)
+    private external fun nativeSetMetronomeVolume(ptr: Long, volume: Float)
+    private external fun nativeLoadMetronomeDrumKit(ptr: Long, path: String): Int
     private external fun nativeStartRecording(ptr: Long)
     private external fun nativeStopRecording(ptr: Long)
     private external fun nativeReadRecordingBuffer(ptr: Long, buffer: FloatArray, maxFloats: Int): Int

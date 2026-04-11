@@ -27,12 +27,16 @@ private val timeSigOptions = listOf(
     TimeSigOption(6, "6/8"),
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MetronomeTab(viewModel: PyanoViewModel) {
     val bpm by viewModel.metronomeBpm.collectAsState()
     val timeSig by viewModel.metronomeTimeSig.collectAsState()
     val running by viewModel.metronomeRunning.collectAsState()
     val currentBeat by viewModel.metronomeBeat.collectAsState()
+    val clickType by viewModel.metronomeClickType.collectAsState()
+    val volume by viewModel.metronomeVolume.collectAsState()
+    var soundMenuExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -127,6 +131,65 @@ fun MetronomeTab(viewModel: PyanoViewModel) {
             }
         }
 
+        // Sound + Volume
+        Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                SectionHeader("Sound")
+                Spacer(modifier = Modifier.height(8.dp))
+                val sounds = viewModel.metronomeSounds
+                val selectedIndex = clickType.coerceIn(0, sounds.lastIndex)
+                val selectedLabel = sounds[selectedIndex].name
+                ExposedDropdownMenuBox(
+                    expanded = soundMenuExpanded,
+                    onExpandedChange = { soundMenuExpanded = !soundMenuExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = selectedLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Click sound") },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = soundMenuExpanded)
+                        },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = soundMenuExpanded,
+                        onDismissRequest = { soundMenuExpanded = false }
+                    ) {
+                        sounds.forEachIndexed { idx, sound ->
+                            DropdownMenuItem(
+                                text = { Text(sound.name) },
+                                onClick = {
+                                    viewModel.setMetronomeClickType(idx)
+                                    soundMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                SectionHeader("Volume")
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Slider(
+                        value = volume,
+                        onValueChange = { viewModel.setMetronomeVolume(it) },
+                        valueRange = 0f..2f,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "${(volume * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.widthIn(min = 48.dp),
+                        textAlign = TextAlign.End
+                    )
+                }
+            }
+        }
+
         // Controls: Start/Stop + Tap Tempo
         Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
             Column(
@@ -137,14 +200,15 @@ fun MetronomeTab(viewModel: PyanoViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                 ) {
-                    // Start/Stop button
-                    FilledTonalButton(
+                    // Start/Stop button — matches the primary "selected chip" style
+                    // used by selector buttons on the Synth tab (filled primary).
+                    Button(
                         onClick = { viewModel.toggleMetronome() },
-                        colors = ButtonDefaults.filledTonalButtonColors(
+                        colors = ButtonDefaults.buttonColors(
                             containerColor = if (running) MaterialTheme.colorScheme.error
-                                             else MaterialTheme.colorScheme.primaryContainer,
+                                             else MaterialTheme.colorScheme.primary,
                             contentColor = if (running) MaterialTheme.colorScheme.onError
-                                           else MaterialTheme.colorScheme.onPrimaryContainer
+                                           else MaterialTheme.colorScheme.onPrimary
                         ),
                         modifier = Modifier.weight(1f).height(56.dp)
                     ) {

@@ -139,6 +139,25 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _metronomeBeat = MutableStateFlow(0)
     val metronomeBeat = _metronomeBeat.asStateFlow()
 
+    private val _metronomeClickType = MutableStateFlow(prefs.getInt("metronomeClickType", 0))
+    val metronomeClickType = _metronomeClickType.asStateFlow()
+
+    private val _metronomeVolume = MutableStateFlow(prefs.getFloat("metronomeVolume", 1.0f))
+    val metronomeVolume = _metronomeVolume.asStateFlow()
+
+    // GM percussion note pairs: downbeat / subbeat. Index into this list is
+    // persisted as metronomeClickType so the dropdown stays stable across updates.
+    data class MetronomeSound(val name: String, val downbeatNote: Int, val subbeatNote: Int)
+    val metronomeSounds = listOf(
+        MetronomeSound("Metronome", 34, 33),   // Metronome Bell / Click
+        MetronomeSound("Wood Block", 76, 77),  // Hi / Low Wood Block
+        MetronomeSound("Claves", 75, 75),
+        MetronomeSound("Side Stick", 37, 37),
+        MetronomeSound("Cowbell", 56, 56),
+        MetronomeSound("Closed Hi-Hat", 42, 42),
+        MetronomeSound("Sticks", 31, 31),
+    )
+
     // --- Loop Station ---
     private val loopEngine = LoopEngine(engine)
 
@@ -214,6 +233,20 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(TAG, "Failed to start audio")
             return
         }
+
+        // Load the dedicated metronome drum kit (FluidR3_GM.sf2 bank 128 preset 0)
+        // BEFORE any piano soundfont so channel 9 routing is stable. Bundled in
+        // assets; idempotent copy.
+        val drumPath = engine.copySoundFontFromAssets(getApplication(), DEFAULT_SF)
+        if (drumPath != null) {
+            engine.loadMetronomeDrumKit(drumPath)
+        } else {
+            Log.e(TAG, "Failed to stage metronome drum soundfont")
+        }
+
+        // Push saved metronome sound + volume to engine
+        applyMetronomeSound()
+        engine.setMetronomeVolume(_metronomeVolume.value)
 
         // Apply saved settings
         engine.setGain(_gain.value)
@@ -680,11 +713,33 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             // Push current settings to engine before starting
             engine.setMetronomeBpm(_metronomeBpm.value)
             engine.setMetronomeTimeSig(_metronomeTimeSig.value)
+            applyMetronomeSound()
+            engine.setMetronomeVolume(_metronomeVolume.value)
             engine.startMetronome()
         } else {
             engine.stopMetronome()
             _metronomeBeat.value = 0
         }
+    }
+
+    private fun applyMetronomeSound() {
+        val idx = _metronomeClickType.value.coerceIn(0, metronomeSounds.lastIndex)
+        val sound = metronomeSounds[idx]
+        engine.setMetronomeClickNotes(sound.downbeatNote, sound.subbeatNote)
+    }
+
+    fun setMetronomeClickType(type: Int) {
+        val clamped = type.coerceIn(0, metronomeSounds.lastIndex)
+        _metronomeClickType.value = clamped
+        save("metronomeClickType", clamped)
+        applyMetronomeSound()
+    }
+
+    fun setMetronomeVolume(volume: Float) {
+        val clamped = volume.coerceIn(0f, 2f)
+        _metronomeVolume.value = clamped
+        save("metronomeVolume", clamped)
+        engine.setMetronomeVolume(clamped)
     }
 
     // --- Loop Station ---

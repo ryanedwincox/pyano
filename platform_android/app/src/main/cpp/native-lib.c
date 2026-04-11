@@ -37,6 +37,9 @@ void engine_stop_metronome(void* engine);
 void engine_set_metronome_bpm(void* engine, int bpm);
 void engine_set_metronome_time_sig(void* engine, int beats);
 int engine_get_metronome_beat(void* engine);
+void engine_set_metronome_click_notes(void* engine, int downbeatNote, int subbeatNote);
+void engine_set_metronome_volume(void* engine, float volume);
+int engine_load_metronome_drum_kit(void* engine, const char* path);
 void engine_start_recording(void* engine);
 void engine_stop_recording(void* engine);
 int engine_read_recording_buffer(void* engine, float* out, int maxFloats);
@@ -205,6 +208,28 @@ Java_com_pyano_audio_FluidSynthEngine_nativeSetMetronomeTimeSig(JNIEnv* env, job
 JNIEXPORT jint JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeGetMetronomeBeat(JNIEnv* env, jobject thiz, jlong ptr) {
     return engine_get_metronome_beat((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeSetMetronomeClickNotes(JNIEnv* env, jobject thiz,
+                                                                     jlong ptr, jint downbeatNote,
+                                                                     jint subbeatNote) {
+    engine_set_metronome_click_notes((void*)(intptr_t)ptr, downbeatNote, subbeatNote);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeSetMetronomeVolume(JNIEnv* env, jobject thiz,
+                                                                 jlong ptr, jfloat volume) {
+    engine_set_metronome_volume((void*)(intptr_t)ptr, volume);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeLoadMetronomeDrumKit(JNIEnv* env, jobject thiz,
+                                                                   jlong ptr, jstring path) {
+    const char* pathStr = (*env)->GetStringUTFChars(env, path, NULL);
+    int result = engine_load_metronome_drum_kit((void*)(intptr_t)ptr, pathStr);
+    (*env)->ReleaseStringUTFChars(env, path, pathStr);
+    return result;
 }
 
 // --- Recording JNI functions ---
