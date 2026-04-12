@@ -29,6 +29,7 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
     val loopCountIn by viewModel.loopCountIn.collectAsState()
     val loopSyncBpm by viewModel.loopSyncBpm.collectAsState()
     val metronomeBpm by viewModel.metronomeBpm.collectAsState()
+    val loopMetronome by viewModel.loopMetronome.collectAsState()
     val recordingLayerIndex by viewModel.loopRecordingLayerIndex.collectAsState()
     val hasAnyEvents by viewModel.loopHasAnyEvents.collectAsState()
 
@@ -76,18 +77,13 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
             Column(modifier = Modifier.padding(16.dp)) {
                 SectionHeader("Loop Length")
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(
+                AdaptiveSelector(
+                    items = barOptions,
+                    selected = barOptions.find { it == loopLengthBars },
+                    onSelect = { viewModel.setLoopLengthBars(it) },
+                    label = { "$it bar${if (it > 1) "s" else ""}" },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    for (bars in barOptions) {
-                        FilterChip(
-                            selected = loopLengthBars == bars,
-                            onClick = { viewModel.setLoopLengthBars(bars) },
-                            label = { Text("$bars bar${if (bars > 1) "s" else ""}") }
-                        )
-                    }
-                }
+                )
             }
         }
 
@@ -255,6 +251,24 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
                         Text("Clear All")
                     }
 
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Metronome",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Switch(
+                            checked = loopMetronome,
+                            onCheckedChange = { viewModel.toggleLoopMetronome() }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "Count-in",

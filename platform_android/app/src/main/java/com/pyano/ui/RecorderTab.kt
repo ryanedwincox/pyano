@@ -15,8 +15,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,9 +43,19 @@ fun RecorderTab(viewModel: PyanoViewModel) {
     val durationSec by viewModel.recordingDurationSec.collectAsState()
     val recordings by viewModel.savedRecordings.collectAsState()
     val outputLevel by viewModel.outputLevel.collectAsState()
+    val masteringRecording by viewModel.masteringRecording.collectAsState()
 
     // Refresh recordings on first composition
     LaunchedEffect(Unit) { viewModel.refreshRecordings() }
+
+    // Mastering dialog
+    masteringRecording?.let { recording ->
+        MasteringScreen(
+            recording = recording,
+            onDismiss = { viewModel.closeMastering() },
+            onExportComplete = { viewModel.refreshRecordings() }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -65,7 +77,9 @@ fun RecorderTab(viewModel: PyanoViewModel) {
         // --- Saved Recordings ---
         RecordingsListCard(
             recordings = recordings,
+            onRename = { path, newName -> viewModel.renameRecording(path, newName) },
             onDelete = { viewModel.deleteRecording(it) },
+            onMaster = { viewModel.openMastering(it) },
             modifier = Modifier.weight(1f)
         )
     }
@@ -190,7 +204,9 @@ private fun RecordControlCard(
 @Composable
 private fun RecordingsListCard(
     recordings: List<RecordingInfo>,
+    onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
+    onMaster: (RecordingInfo) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -226,7 +242,9 @@ private fun RecordingsListCard(
                     items(recordings, key = { it.path }) { recording ->
                         RecordingRow(
                             recording = recording,
-                            onDelete = { onDelete(recording.path) }
+                            onRename = { newName -> onRename(recording.path, newName) },
+                            onDelete = { onDelete(recording.path) },
+                            onMaster = { onMaster(recording) }
                         )
                     }
                 }
@@ -238,12 +256,16 @@ private fun RecordingsListCard(
 @Composable
 private fun RecordingRow(
     recording: RecordingInfo,
-    onDelete: () -> Unit
+    onRename: (String) -> Unit,
+    onDelete: () -> Unit,
+    onMaster: () -> Unit
 ) {
     val context = LocalContext.current
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
 
     // Cleanup media player on disposal
     DisposableEffect(recording.path) {
@@ -335,6 +357,27 @@ private fun RecordingRow(
             }
         }
 
+        // Master button
+        IconButton(onClick = onMaster) {
+            Icon(
+                Icons.Default.Tune,
+                contentDescription = "Master",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        // Rename button
+        IconButton(onClick = {
+            renameText = recording.name
+            showRenameDialog = true
+        }) {
+            Icon(
+                Icons.Default.Edit,
+                contentDescription = "Rename",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         // Share button
         IconButton(onClick = {
             try {
@@ -390,6 +433,35 @@ private fun RecordingRow(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename Recording") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    singleLine = true,
+                    label = { Text("Name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRenameDialog = false
+                        if (renameText.isNotBlank() && renameText != recording.name) {
+                            onRename(renameText)
+                        }
+                    },
+                    enabled = renameText.isNotBlank()
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("Cancel") }
             }
         )
     }

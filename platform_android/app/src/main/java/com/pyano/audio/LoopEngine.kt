@@ -166,11 +166,12 @@ class LoopEngine(private val engine: FluidSynthEngine) {
 
     /**
      * Check if recording should auto-stop at loop boundary.
-     * Called from the ViewModel's polling loop when playback + recording are both active.
+     * Called from the ViewModel's polling loop. Works in both overdub mode
+     * (playback + recording) and standalone recording mode.
      * Returns true if recording was auto-stopped.
      */
     fun checkAutoStopRecording(): Boolean {
-        if (!isRecording || !isPlaying) return false
+        if (!isRecording) return false
         val elapsed = System.nanoTime() - recordStartNs
         if (elapsed >= loopDurationNs) {
             stopRecording()

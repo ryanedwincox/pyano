@@ -182,6 +182,10 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _loopCountIn = MutableStateFlow(prefs.getBoolean("loopCountIn", false))
     val loopCountIn = _loopCountIn.asStateFlow()
 
+    private val _loopMetronome = MutableStateFlow(prefs.getBoolean("loopMetronome", false))
+    val loopMetronome = _loopMetronome.asStateFlow()
+    private var loopStartedMetronome = false
+
     private val _loopSyncBpm = MutableStateFlow(prefs.getBoolean("loopSyncBpm", true))
     val loopSyncBpm = _loopSyncBpm.asStateFlow()
 
@@ -202,6 +206,10 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _savedRecordings = MutableStateFlow<List<RecordingInfo>>(emptyList())
     val savedRecordings = _savedRecordings.asStateFlow()
+
+    // Mastering
+    private val _masteringRecording = MutableStateFlow<RecordingInfo?>(null)
+    val masteringRecording = _masteringRecording.asStateFlow()
 
     // Saved soundfont path
     private val savedSfPath = prefs.getString("sfPath", null)
@@ -385,11 +393,18 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                     _loopPlaying.value = loopEngine.isPlaying
                     _loopRecording.value = loopEngine.isRecording
 
-                    // Auto-stop recording at loop boundary when overdubbing
+                    // Auto-stop recording at loop boundary
                     if (loopEngine.checkAutoStopRecording()) {
+                        midiEventHandler?.recordingListener = null
                         _loopRecording.value = false
                         _loopRecordingLayerIndex.value = -1
                         refreshLoopLayerCounts()
+                        if (loopStartedMetronome && _metronomeRunning.value) {
+                            engine.stopMetronome()
+                            _metronomeRunning.value = false
+                            _metronomeBeat.value = 0
+                            loopStartedMetronome = false
+                        }
                     }
                 }
             }
@@ -759,24 +774,29 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Start metronome if the loop metronome toggle is on (or count-in needs it)
+        val needsMetronome = _loopMetronome.value || (_loopCountIn.value && !loopEngine.isPlaying)
+        val metronomeWasRunning = _metronomeRunning.value
+        if (needsMetronome && !metronomeWasRunning) {
+            engine.setMetronomeBpm(_loopBpm.value)
+            engine.setMetronomeTimeSig(loopEngine.timeSigBeats)
+            applyMetronomeSound()
+            engine.setMetronomeVolume(_metronomeVolume.value)
+            engine.startMetronome()
+            _metronomeRunning.value = true
+            loopStartedMetronome = true
+        }
+
         if (_loopCountIn.value && !loopEngine.isPlaying) {
-            // Count-in: start metronome for 1 bar, then begin recording
-            val metronomeWasRunning = _metronomeRunning.value
-            if (!metronomeWasRunning) {
-                // Push loop BPM to metronome for count-in
-                engine.setMetronomeBpm(_loopBpm.value)
-                engine.setMetronomeTimeSig(loopEngine.timeSigBeats)
-                engine.startMetronome()
-                _metronomeRunning.value = true
-            }
             val countInDurationMs = (loopEngine.timeSigBeats.toLong() * 60_000L) / _loopBpm.value
             viewModelScope.launch {
                 delay(countInDurationMs)
-                // Only stop metronome if we started it for count-in
-                if (!metronomeWasRunning && _metronomeRunning.value) {
+                // Stop metronome after count-in ONLY if loop metronome toggle is off
+                if (!_loopMetronome.value && loopStartedMetronome && _metronomeRunning.value) {
                     engine.stopMetronome()
                     _metronomeRunning.value = false
                     _metronomeBeat.value = 0
+                    loopStartedMetronome = false
                 }
                 doStartRecording()
             }
@@ -800,6 +820,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _loopRecording.value = false
         _loopRecordingLayerIndex.value = -1
         refreshLoopLayerCounts()
+        // Stop metronome if we started it for loop recording
+        if (loopStartedMetronome && _metronomeRunning.value) {
+            engine.stopMetronome()
+            _metronomeRunning.value = false
+            _metronomeBeat.value = 0
+            loopStartedMetronome = false
+        }
     }
 
     fun toggleLoopPlayback() {
@@ -854,6 +881,12 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         save("loopCountIn", newVal)
     }
 
+    fun toggleLoopMetronome() {
+        val newVal = !_loopMetronome.value
+        _loopMetronome.value = newVal
+        save("loopMetronome", newVal)
+    }
+
     fun toggleLoopSyncBpm() {
         val newVal = !_loopSyncBpm.value
         _loopSyncBpm.value = newVal
@@ -894,9 +927,22 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _savedRecordings.value = audioRecorder.getSavedRecordings()
     }
 
+    fun renameRecording(path: String, newName: String) {
+        audioRecorder.renameRecording(path, newName)
+        refreshRecordings()
+    }
+
     fun deleteRecording(path: String) {
         audioRecorder.deleteRecording(path)
         refreshRecordings()
+    }
+
+    fun openMastering(recording: RecordingInfo) {
+        _masteringRecording.value = recording
+    }
+
+    fun closeMastering() {
+        _masteringRecording.value = null
     }
 
     fun scanSoundFonts() {
