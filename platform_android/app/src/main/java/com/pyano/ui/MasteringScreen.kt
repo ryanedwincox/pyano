@@ -33,8 +33,10 @@ import com.pyano.audio.MasteringChain
 import com.pyano.audio.MasteringPlayer
 import com.pyano.audio.RecordingInfo
 import com.pyano.audio.exportMaster
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.pow
 
 @Composable
@@ -47,7 +49,15 @@ fun MasteringScreen(
     val scope = rememberCoroutineScope()
 
     DisposableEffect(Unit) { onDispose { player.release() } }
-    LaunchedEffect(recording.path) { player.load(recording.path) }
+    LaunchedEffect(recording.path) {
+        player.load(recording.path)
+        // Sync engine with UI defaults so displayed values match DSP state
+        player.chain.updateEq(0, 250f, 0f)
+        player.chain.updateEq(1, 1200f, 0f)
+        player.chain.updateEq(2, 8000f, 0f)
+        player.chain.updateCompressor(-18f, 4f, 10f, 150f, 0f)
+        player.chain.updateLimiter(-0.3f, 50f)
+    }
 
     // Collect player state flows
     val isPlaying by player.isPlaying.collectAsState()
@@ -95,11 +105,12 @@ fun MasteringScreen(
                     )
                 }
 
+                val isExporting = exportProgress >= 0f
                 EqSection(player.chain)
                 CompressorSection(player.chain, compressorGrDb)
                 LimiterSection(player.chain, limiterGrDb, limiterActive)
                 StereoMetersSection(leftPeakDb, rightPeakDb, leftClip, rightClip) { player.resetClip() }
-                TransportSection(isPlaying, playbackPos, recording.durationMs, player, scope)
+                TransportSection(isPlaying, playbackPos, recording.durationMs, player, scope, isExporting)
                 ExportSection(
                     recording = recording,
                     chain = player.chain,
@@ -279,7 +290,8 @@ private fun TransportSection(
     playbackPos: Float,
     totalMs: Long,
     player: MasteringPlayer,
-    scope: CoroutineScope
+    scope: CoroutineScope,
+    isExporting: Boolean = false
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -290,9 +302,12 @@ private fun TransportSection(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = {
-                    if (isPlaying) player.stop() else player.play(scope)
-                }) {
+                IconButton(
+                    onClick = {
+                        if (isPlaying) player.stop() else player.play(scope)
+                    },
+                    enabled = !isExporting
+                ) {
                     if (isPlaying) {
                         // Stop icon: filled square
                         Box(
@@ -352,10 +367,17 @@ private fun ExportSection(
             Button(
                 onClick = {
                     onExportStart()
+                    val exportChain = chain.copyWithCurrentParams()
                     scope.launch {
+                        var outputPath: String? = null
                         try {
-                            val result = exportMaster(recording.path, chain, onProgress)
+                            val result = exportMaster(recording.path, exportChain, onProgress)
+                            outputPath = result
                             onExportDone(result.substringAfterLast('/'))
+                        } catch (e: CancellationException) {
+                            outputPath?.let { File(it).delete() }
+                            onExportError("Export cancelled")
+                            throw e
                         } catch (e: Exception) {
                             Log.e("Pyano", "Export failed", e)
                             onExportError(e.message ?: "Export failed")

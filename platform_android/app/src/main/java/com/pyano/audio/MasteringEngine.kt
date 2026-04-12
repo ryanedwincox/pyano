@@ -241,7 +241,7 @@ class Limiter(
         delayLine[writePos] = sample
         writePos = (writePos + 1) % lookaheadSamples
 
-        currentGainReductionDb = -linearToDb(gainReduction).coerceAtLeast(0f)
+        currentGainReductionDb = abs(linearToDb(gainReduction)).coerceIn(0f, 20f)
         isActive = currentGainReductionDb > 0.5f
 
         return output
@@ -261,7 +261,7 @@ class MasteringChain(private val sampleRate: Int = 48000) {
                 0 -> BiquadFilter.lowShelf(200f, 0f, sampleRate)
                 1 -> BiquadFilter.peakEQ(1000f, 0f, 1f, sampleRate)
                 2 -> BiquadFilter.highShelf(4000f, 0f, sampleRate)
-                else -> BiquadFilter.passthrough()
+                else -> error("unreachable")
             }
         }
     }
@@ -285,6 +285,7 @@ class MasteringChain(private val sampleRate: Int = 48000) {
     val limiterActive: Boolean
         get() = limiters[0].isActive || limiters[1].isActive
 
+    @Synchronized
     fun processFrame(left: Float, right: Float): Pair<Float, Float> {
         var l = left
         var r = right
@@ -306,6 +307,7 @@ class MasteringChain(private val sampleRate: Int = 48000) {
         return Pair(l, r)
     }
 
+    @Synchronized
     fun updateEq(band: Int, freq: Float, gainDb: Float) {
         require(band in 0..2) { "EQ band must be 0, 1, or 2" }
         eqFreqs[band] = freq
@@ -313,13 +315,13 @@ class MasteringChain(private val sampleRate: Int = 48000) {
         val newFilter = when (band) {
             0 -> BiquadFilter.lowShelf(freq, gainDb, sampleRate)
             1 -> BiquadFilter.peakEQ(freq, gainDb, 1f, sampleRate)
-            2 -> BiquadFilter.highShelf(freq, gainDb, sampleRate)
-            else -> return
+            else -> BiquadFilter.highShelf(freq, gainDb, sampleRate)
         }
         eqBands[band][0].updateCoefficients(newFilter)
         eqBands[band][1].updateCoefficients(newFilter)
     }
 
+    @Synchronized
     fun updateCompressor(
         thresholdDb: Float,
         ratio: Float,
@@ -337,6 +339,7 @@ class MasteringChain(private val sampleRate: Int = 48000) {
         }
     }
 
+    @Synchronized
     fun updateLimiter(ceilingDb: Float, releaseMs: Float) {
         for (l in limiters) {
             l.ceilingDb = ceilingDb
@@ -349,6 +352,18 @@ class MasteringChain(private val sampleRate: Int = 48000) {
     fun getEqBand(band: Int): BiquadFilter {
         require(band in 0..2) { "EQ band must be 0, 1, or 2" }
         return eqBands[band][0]
+    }
+
+    /** Create an independent copy with matching parameters — safe for concurrent export. */
+    fun copyWithCurrentParams(): MasteringChain {
+        val copy = MasteringChain(sampleRate)
+        for (band in 0..2) copy.updateEq(band, eqFreqs[band], eqGains[band])
+        copy.updateCompressor(
+            compressors[0].thresholdDb, compressors[0].ratio,
+            compressors[0].attackMs, compressors[0].releaseMs, compressors[0].makeupGainDb
+        )
+        copy.updateLimiter(limiters[0].ceilingDb, limiters[0].releaseMs)
+        return copy
     }
 }
 
@@ -449,8 +464,8 @@ class MasteringPlayer {
                     }
                 }
             } finally {
-                track.stop()
                 _isPlaying.value = false
+                // AudioTrack cleanup handled by stop() — avoid double-stop race
             }
         }
     }
@@ -637,12 +652,11 @@ private fun generateOutputFile(srcFile: File): File {
     val candidate = File(dir, "${coreName}_final.wav")
     if (!candidate.exists()) return candidate
 
-    var n = 1
-    while (true) {
+    for (n in 1..999) {
         val numbered = File(dir, "${coreName}_final$n.wav")
         if (!numbered.exists()) return numbered
-        n++
     }
+    throw java.io.IOException("Could not generate unique output filename after 999 attempts")
 }
 
 private fun writeExportWavHeader(
