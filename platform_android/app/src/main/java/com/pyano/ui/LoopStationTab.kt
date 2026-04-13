@@ -2,11 +2,18 @@
 // NOT concerned with synth engine internals or navigation.
 package com.pyano.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +32,9 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
     val loopRecording by viewModel.loopRecording.collectAsState()
     val loopPlaying by viewModel.loopPlaying.collectAsState()
     val loopLayerCounts by viewModel.loopLayerCounts.collectAsState()
+    val loopLayerMuted by viewModel.loopLayerMuted.collectAsState()
+    val loopLayerNames by viewModel.loopLayerNames.collectAsState()
+    var renameLayerIndex by remember { mutableIntStateOf(-1) }
     val loopPosition by viewModel.loopPosition.collectAsState()
     val loopCountIn by viewModel.loopCountIn.collectAsState()
     val loopSyncBpm by viewModel.loopSyncBpm.collectAsState()
@@ -104,12 +114,17 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
                     ) {
-                        // Layer number
+                        // Layer name (tap to rename)
                         Text(
-                            text = "${i + 1}",
+                            text = loopLayerNames.getOrElse(i) { "Layer ${i + 1}" },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.width(28.dp)
+                            modifier = Modifier
+                                .widthIn(min = 28.dp)
+                                .clickable(enabled = eventCount > 0) {
+                                    renameLayerIndex = i
+                                },
+                            maxLines = 1,
                         )
 
                         // Status badge
@@ -142,6 +157,43 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
                         }
 
                         Spacer(modifier = Modifier.weight(1f))
+
+                        // Record button per layer
+                        IconButton(
+                            onClick = {
+                                if (isActiveRecording) viewModel.stopLoopRecording()
+                                else viewModel.startLoopRecordingLayer(i)
+                            },
+                            enabled = !loopRecording || isActiveRecording
+                        ) {
+                            Icon(
+                                imageVector = if (isActiveRecording) Icons.Default.Stop
+                                    else Icons.Default.FiberManualRecord,
+                                contentDescription = if (isActiveRecording) "Stop recording"
+                                    else "Record layer ${i + 1}",
+                                tint = if (isActiveRecording) MaterialTheme.colorScheme.error
+                                    else if (!loopRecording) MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                            )
+                        }
+
+                        // Mute toggle button
+                        val isMuted = loopLayerMuted.getOrElse(i) { false }
+                        IconButton(
+                            onClick = { viewModel.toggleLoopLayerMuted(i) },
+                            enabled = eventCount > 0 && !isActiveRecording
+                        ) {
+                            Icon(
+                                imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                contentDescription = if (isMuted) "Unmute layer ${i + 1}" else "Mute layer ${i + 1}",
+                                tint = if (eventCount > 0 && !isActiveRecording) {
+                                    if (isMuted) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                    else MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                                }
+                            )
+                        }
 
                         // Clear button
                         IconButton(
@@ -190,51 +242,35 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
                 modifier = Modifier.padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Record + Play/Stop row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
-                ) {
-                    // Record button
-                    val hasEmptyLayer = loopLayerCounts.any { it == 0 }
-                    FilledTonalButton(
-                        onClick = {
-                            if (loopRecording) viewModel.stopLoopRecording()
-                            else viewModel.startLoopRecording()
-                        },
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = if (loopRecording) MaterialTheme.colorScheme.error
-                                             else MaterialTheme.colorScheme.errorContainer,
-                            contentColor = if (loopRecording) MaterialTheme.colorScheme.onError
-                                           else MaterialTheme.colorScheme.onErrorContainer
-                        ),
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        enabled = loopRecording || hasEmptyLayer
-                    ) {
-                        Text(
-                            text = if (loopRecording) "Stop Rec" else "Record",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-
-                    // Play/Stop button
-                    FilledTonalButton(
-                        onClick = { viewModel.toggleLoopPlayback() },
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = if (loopPlaying) MaterialTheme.colorScheme.error
-                                             else MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = if (loopPlaying) MaterialTheme.colorScheme.onError
-                                           else MaterialTheme.colorScheme.onPrimaryContainer
-                        ),
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        enabled = loopPlaying || hasAnyEvents
-                    ) {
+                // Play/Stop button — uses primary chip style
+                FilterChip(
+                    selected = loopPlaying,
+                    onClick = { viewModel.toggleLoopPlayback() },
+                    label = {
                         Text(
                             text = if (loopPlaying) "Stop" else "Play",
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleMedium,
                         )
-                    }
-                }
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (loopPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                        )
+                    },
+                    enabled = loopPlaying || hasAnyEvents,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (loopPlaying) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline,
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                )
 
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -285,5 +321,33 @@ fun LoopStationTab(viewModel: PyanoViewModel) {
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+    }
+
+    // Rename dialog
+    if (renameLayerIndex >= 0) {
+        val currentName = loopLayerNames.getOrElse(renameLayerIndex) { "" }
+        var textValue by remember(renameLayerIndex) { mutableStateOf(currentName) }
+        AlertDialog(
+            onDismissRequest = { renameLayerIndex = -1 },
+            title = { Text("Rename Layer") },
+            text = {
+                OutlinedTextField(
+                    value = textValue,
+                    onValueChange = { textValue = it },
+                    singleLine = true,
+                    label = { Text("Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.renameLoopLayer(renameLayerIndex, textValue.trim().ifEmpty { "Layer ${renameLayerIndex + 1}" })
+                    renameLayerIndex = -1
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameLayerIndex = -1 }) { Text("Cancel") }
+            },
+        )
     }
 }

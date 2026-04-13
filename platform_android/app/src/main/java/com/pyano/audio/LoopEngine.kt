@@ -42,6 +42,8 @@ class LoopEngine(private val engine: FluidSynthEngine) {
     // --- Layer storage ---
     private val layers: Array<MutableList<TimestampedMidiEvent>> =
         Array(MAX_LAYERS) { mutableListOf() }
+    private val layerMuted = BooleanArray(MAX_LAYERS) { false }
+    private val layerNames = Array(MAX_LAYERS) { "Layer ${it + 1}" }
 
     // --- Tempo / length ---
     @Volatile var bpm: Int = 120
@@ -102,6 +104,23 @@ class LoopEngine(private val engine: FluidSynthEngine) {
         isRecording = true
         Log.i(TAG, "LoopEngine: recording started on layer $idx")
         return idx
+    }
+
+    /**
+     * Start recording to a specific layer, clearing it first if non-empty.
+     * Returns the layer index on success, or -1 if index is out of range.
+     */
+    fun startRecordingOnLayer(index: Int): Int {
+        if (index !in 0 until MAX_LAYERS) return -1
+        synchronized(layerLock) {
+            layers[index].clear()
+        }
+        layerMuted[index] = false
+        recordingLayerIndex = index
+        recordStartNs = System.nanoTime()
+        isRecording = true
+        Log.i(TAG, "LoopEngine: recording started on layer $index (re-record)")
+        return index
     }
 
     /** Stop recording the current layer. */
@@ -198,6 +217,8 @@ class LoopEngine(private val engine: FluidSynthEngine) {
             synchronized(layerLock) {
                 layers[index].clear()
             }
+            layerMuted[index] = false
+            layerNames[index] = "Layer ${index + 1}"
             Log.i(TAG, "LoopEngine: cleared layer $index")
         }
     }
@@ -206,6 +227,8 @@ class LoopEngine(private val engine: FluidSynthEngine) {
         synchronized(layerLock) {
             for (layer in layers) layer.clear()
         }
+        layerMuted.fill(false)
+        for (i in layerNames.indices) layerNames[i] = "Layer ${i + 1}"
         Log.i(TAG, "LoopEngine: cleared all layers")
     }
 
@@ -215,6 +238,38 @@ class LoopEngine(private val engine: FluidSynthEngine) {
 
     fun hasAnyEvents(): Boolean = synchronized(layerLock) {
         layers.any { it.isNotEmpty() }
+    }
+
+    fun isLayerMuted(index: Int): Boolean =
+        index in 0 until MAX_LAYERS && layerMuted[index]
+
+    fun toggleLayerMuted(index: Int) {
+        if (index in 0 until MAX_LAYERS) {
+            layerMuted[index] = !layerMuted[index]
+            Log.i(TAG, "LoopEngine: layer $index muted=${layerMuted[index]}")
+        }
+    }
+
+    fun getLayerName(index: Int): String =
+        layerNames.getOrElse(index) { "Layer ${index + 1}" }
+
+    fun setLayerName(index: Int, name: String) {
+        if (index in 0 until MAX_LAYERS) {
+            layerNames[index] = name
+        }
+    }
+
+    fun getLayerEvents(index: Int): List<TimestampedMidiEvent> = synchronized(layerLock) {
+        layers.getOrNull(index)?.toList() ?: emptyList()
+    }
+
+    fun setLayerEvents(index: Int, events: List<TimestampedMidiEvent>) {
+        if (index in 0 until MAX_LAYERS) {
+            synchronized(layerLock) {
+                layers[index].clear()
+                layers[index].addAll(events)
+            }
+        }
     }
 
     // --- Internal: playback loop ---
@@ -230,8 +285,8 @@ class LoopEngine(private val engine: FluidSynthEngine) {
         // Snapshot all events under lock to avoid concurrent modification
         val merged = mutableListOf<TimestampedMidiEvent>()
         synchronized(layerLock) {
-            for (layer in layers) {
-                if (layer.isNotEmpty()) merged.addAll(layer)
+            for ((i, layer) in layers.withIndex()) {
+                if (layer.isNotEmpty() && !layerMuted[i]) merged.addAll(layer)
             }
         }
         if (merged.isEmpty()) {

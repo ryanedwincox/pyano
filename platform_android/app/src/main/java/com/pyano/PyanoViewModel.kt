@@ -15,6 +15,7 @@ import com.pyano.audio.FluidSynthEngine
 import com.pyano.audio.LoopEngine
 import com.pyano.audio.RecordingInfo
 import com.pyano.audio.MidiEventType
+import com.pyano.audio.TimestampedMidiEvent
 import com.pyano.audio.SF2Info
 import com.pyano.audio.SF2MetadataReader
 import com.pyano.audio.SfPreset
@@ -176,6 +177,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _loopLayerCounts = MutableStateFlow(List(LoopEngine.MAX_LAYERS) { 0 })
     val loopLayerCounts = _loopLayerCounts.asStateFlow()
 
+    private val _loopLayerMuted = MutableStateFlow(List(LoopEngine.MAX_LAYERS) { false })
+    val loopLayerMuted = _loopLayerMuted.asStateFlow()
+
     private val _loopPosition = MutableStateFlow(0f)
     val loopPosition = _loopPosition.asStateFlow()
 
@@ -194,6 +198,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _loopHasAnyEvents = MutableStateFlow(false)
     val loopHasAnyEvents = _loopHasAnyEvents.asStateFlow()
+
+    private val _loopLayerNames = MutableStateFlow(List(LoopEngine.MAX_LAYERS) { "Layer ${it + 1}" })
+    val loopLayerNames = _loopLayerNames.asStateFlow()
 
     // --- Audio Recorder ---
     val audioRecorder = AudioRecorder(engine, application)
@@ -354,6 +361,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         loopEngine.setBpm(_loopBpm.value)
         loopEngine.setLoopLengthBars(_loopLengthBars.value)
         loopEngine.setTimeSigBeats(_metronomeTimeSig.value)
+        loadLoops()
 
         // Start activity monitor polling
         viewModelScope.launch {
@@ -399,6 +407,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                         _loopRecording.value = false
                         _loopRecordingLayerIndex.value = -1
                         refreshLoopLayerCounts()
+                        saveLoops()
                         if (loopStartedMetronome && _metronomeRunning.value) {
                             engine.stopMetronome()
                             _metronomeRunning.value = false
@@ -765,19 +774,15 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     // --- Loop Station ---
 
     fun startLoopRecording() {
+        startLoopRecordingLayer(-1)
+    }
+
+    fun startLoopRecordingLayer(layerIndex: Int) {
         if (loopEngine.isRecording) return
 
-        // Wire up recording listener
-        midiEventHandler?.recordingListener = object : MidiRecordingListener {
-            override fun onMidiEvent(channel: Int, type: MidiEventType, note: Int, velocity: Int) {
-                loopEngine.recordEvent(channel, type, note, velocity)
-            }
-        }
-
-        // Start metronome if the loop metronome toggle is on (or count-in needs it)
-        val needsMetronome = _loopMetronome.value || (_loopCountIn.value && !loopEngine.isPlaying)
+        // Always start metronome for count-in
         val metronomeWasRunning = _metronomeRunning.value
-        if (needsMetronome && !metronomeWasRunning) {
+        if (!metronomeWasRunning) {
             engine.setMetronomeBpm(_loopBpm.value)
             engine.setMetronomeTimeSig(loopEngine.timeSigBeats)
             applyMetronomeSound()
@@ -787,27 +792,39 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             loopStartedMetronome = true
         }
 
-        if (_loopCountIn.value && !loopEngine.isPlaying) {
-            val countInDurationMs = (loopEngine.timeSigBeats.toLong() * 60_000L) / _loopBpm.value
-            viewModelScope.launch {
-                delay(countInDurationMs)
-                // Stop metronome after count-in ONLY if loop metronome toggle is off
-                if (!_loopMetronome.value && loopStartedMetronome && _metronomeRunning.value) {
-                    engine.stopMetronome()
-                    _metronomeRunning.value = false
-                    _metronomeBeat.value = 0
-                    loopStartedMetronome = false
-                }
-                doStartRecording()
+        // Count-in: wait one bar, then start recording + playback
+        val countInDurationMs = (loopEngine.timeSigBeats.toLong() * 60_000L) / _loopBpm.value
+        viewModelScope.launch {
+            delay(countInDurationMs)
+            // Start playback of existing layers so user hears them while recording
+            if (!loopEngine.isPlaying && loopEngine.hasAnyEvents()) {
+                loopEngine.startPlayback(viewModelScope)
+                _loopPlaying.value = true
             }
-        } else {
-            doStartRecording()
+            // Stop metronome after count-in ONLY if loop metronome toggle is off
+            if (!_loopMetronome.value && loopStartedMetronome && _metronomeRunning.value) {
+                engine.stopMetronome()
+                _metronomeRunning.value = false
+                _metronomeBeat.value = 0
+                loopStartedMetronome = false
+            }
+            doStartRecording(layerIndex)
         }
     }
 
-    private fun doStartRecording() {
-        val idx = loopEngine.startRecording()
+    private fun doStartRecording(layerIndex: Int = -1) {
+        val idx = if (layerIndex >= 0) {
+            loopEngine.startRecordingOnLayer(layerIndex)
+        } else {
+            loopEngine.startRecording()
+        }
         if (idx >= 0) {
+            // Wire listener AFTER isRecording is true so no early events are dropped
+            midiEventHandler?.recordingListener = object : MidiRecordingListener {
+                override fun onMidiEvent(channel: Int, type: MidiEventType, note: Int, velocity: Int) {
+                    loopEngine.recordEvent(channel, type, note, velocity)
+                }
+            }
             _loopRecording.value = true
             _loopRecordingLayerIndex.value = idx
             refreshLoopLayerCounts()
@@ -820,6 +837,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _loopRecording.value = false
         _loopRecordingLayerIndex.value = -1
         refreshLoopLayerCounts()
+        saveLoops()
         // Stop metronome if we started it for loop recording
         if (loopStartedMetronome && _metronomeRunning.value) {
             engine.stopMetronome()
@@ -840,9 +858,15 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleLoopLayerMuted(index: Int) {
+        loopEngine.toggleLayerMuted(index)
+        _loopLayerMuted.value = List(LoopEngine.MAX_LAYERS) { loopEngine.isLayerMuted(it) }
+    }
+
     fun clearLoopLayer(index: Int) {
         loopEngine.clearLayer(index)
         refreshLoopLayerCounts()
+        saveLoops()
     }
 
     fun clearAllLoops() {
@@ -856,6 +880,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         }
         loopEngine.clearAll()
         refreshLoopLayerCounts()
+        saveLoops()
     }
 
     fun setLoopBpm(bpm: Int) {
@@ -902,6 +927,91 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _loopLayerCounts.value = counts
         _loopHasAnyEvents.value = counts.any { it > 0 }
         _loopRecordingLayerIndex.value = loopEngine.recordingLayerIndex
+        _loopLayerMuted.value = List(LoopEngine.MAX_LAYERS) { loopEngine.isLayerMuted(it) }
+        _loopLayerNames.value = List(LoopEngine.MAX_LAYERS) { loopEngine.getLayerName(it) }
+    }
+
+    fun renameLoopLayer(index: Int, name: String) {
+        loopEngine.setLayerName(index, name)
+        _loopLayerNames.value = List(LoopEngine.MAX_LAYERS) { loopEngine.getLayerName(it) }
+        saveLoops()
+    }
+
+    fun saveLoops() {
+        val context = getApplication<Application>()
+        val dir = java.io.File(context.filesDir, "loops")
+        dir.mkdirs()
+        val file = java.io.File(dir, "loops.json")
+        try {
+            val root = org.json.JSONObject()
+            root.put("bpm", loopEngine.bpm)
+            root.put("timeSigBeats", loopEngine.timeSigBeats)
+            root.put("loopLengthBars", loopEngine.loopLengthBars)
+            val layersArr = org.json.JSONArray()
+            for (i in 0 until LoopEngine.MAX_LAYERS) {
+                val layerObj = org.json.JSONObject()
+                layerObj.put("name", loopEngine.getLayerName(i))
+                layerObj.put("muted", loopEngine.isLayerMuted(i))
+                val events = loopEngine.getLayerEvents(i)
+                val eventsArr = org.json.JSONArray()
+                for (e in events) {
+                    val ev = org.json.JSONObject()
+                    ev.put("o", e.offsetNs)
+                    ev.put("c", e.channel)
+                    ev.put("t", e.type.ordinal)
+                    ev.put("n", e.note)
+                    ev.put("v", e.velocity)
+                    eventsArr.put(ev)
+                }
+                layerObj.put("events", eventsArr)
+                layersArr.put(layerObj)
+            }
+            root.put("layers", layersArr)
+            file.writeText(root.toString())
+            Log.i(TAG, "Loops saved (${file.length()} bytes)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save loops", e)
+        }
+    }
+
+    private fun loadLoops() {
+        val context = getApplication<Application>()
+        val file = java.io.File(context.filesDir, "loops/loops.json")
+        if (!file.exists()) return
+        try {
+            val root = org.json.JSONObject(file.readText())
+            val bpm = root.optInt("bpm", 120)
+            val timeSig = root.optInt("timeSigBeats", 4)
+            val bars = root.optInt("loopLengthBars", 4)
+            loopEngine.setBpm(bpm)
+            loopEngine.setTimeSigBeats(timeSig)
+            loopEngine.setLoopLengthBars(bars)
+            _loopBpm.value = bpm
+            _loopLengthBars.value = bars
+            val layersArr = root.optJSONArray("layers") ?: return
+            for (i in 0 until minOf(layersArr.length(), LoopEngine.MAX_LAYERS)) {
+                val layerObj = layersArr.getJSONObject(i)
+                loopEngine.setLayerName(i, layerObj.optString("name", "Layer ${i + 1}"))
+                if (layerObj.optBoolean("muted", false)) loopEngine.toggleLayerMuted(i)
+                val eventsArr = layerObj.optJSONArray("events") ?: continue
+                val events = mutableListOf<TimestampedMidiEvent>()
+                for (j in 0 until eventsArr.length()) {
+                    val ev = eventsArr.getJSONObject(j)
+                    events.add(TimestampedMidiEvent(
+                        offsetNs = ev.getLong("o"),
+                        channel = ev.getInt("c"),
+                        type = MidiEventType.entries[ev.getInt("t")],
+                        note = ev.getInt("n"),
+                        velocity = ev.getInt("v"),
+                    ))
+                }
+                loopEngine.setLayerEvents(i, events)
+            }
+            refreshLoopLayerCounts()
+            Log.i(TAG, "Loops loaded from ${file.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load loops", e)
+        }
     }
 
     // --- Audio Recorder ---
