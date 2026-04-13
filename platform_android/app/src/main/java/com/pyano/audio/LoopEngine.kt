@@ -278,15 +278,20 @@ class LoopEngine(private val engine: FluidSynthEngine) {
      * Play through one full loop iteration. Merges all layer events, sorts by offset,
      * dispatches to FluidSynth with wall-clock compensated delays.
      */
+    /** Event tagged with its source layer for real-time mute checking. */
+    private data class TaggedEvent(val layerIndex: Int, val event: TimestampedMidiEvent)
+
     private suspend fun playOneLoop() {
         val duration = loopDurationNs
         if (duration <= 0) return
 
-        // Snapshot all events under lock to avoid concurrent modification
-        val merged = mutableListOf<TimestampedMidiEvent>()
+        // Snapshot all events under lock, tagged with layer index
+        val merged = mutableListOf<TaggedEvent>()
         synchronized(layerLock) {
             for ((i, layer) in layers.withIndex()) {
-                if (layer.isNotEmpty() && !layerMuted[i]) merged.addAll(layer)
+                if (layer.isNotEmpty()) {
+                    for (e in layer) merged.add(TaggedEvent(i, e))
+                }
             }
         }
         if (merged.isEmpty()) {
@@ -301,29 +306,31 @@ class LoopEngine(private val engine: FluidSynthEngine) {
             }
             return
         }
-        merged.sortBy { it.offsetNs }
+        merged.sortBy { it.event.offsetNs }
 
         // Wall-clock compensation: track actual elapsed time to correct for delay() jitter
         val loopStartWall = System.nanoTime()
 
-        for (event in merged) {
+        for (tagged in merged) {
             // Compute how long we should have been running at this event's offset
-            val targetElapsedNs = event.offsetNs
+            val targetElapsedNs = tagged.event.offsetNs
             val actualElapsedNs = System.nanoTime() - loopStartWall
             val delayNs = targetElapsedNs - actualElapsedNs
             if (delayNs > 1_000_000L) { // >1ms worth delaying
                 delay(delayNs / 1_000_000)
             }
 
-            // Dispatch to FluidSynth
-            dispatchEvent(event)
+            // Check mute at dispatch time so toggling takes effect immediately
+            if (!layerMuted[tagged.layerIndex]) {
+                dispatchEvent(tagged.event)
+            }
 
             // Update position for UI transport
-            currentPositionNs = event.offsetNs
+            currentPositionNs = tagged.event.offsetNs
         }
 
         // Wait remaining time after last event to complete the loop
-        val lastOffsetNs = merged.last().offsetNs
+        val lastOffsetNs = merged.last().event.offsetNs
         val remainingNs = duration - lastOffsetNs
         if (remainingNs > 0) {
             val stepNs = 10_000_000L
