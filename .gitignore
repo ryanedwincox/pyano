@@ -11,7 +11,7 @@ platform_android/app/build/
 platform_android/app/.cxx/
 platform_android/app/src/main/assets/soundfonts/
 platform_android/local.properties
-platform_android/gradle/wrapper/gradle-wrapper.jar
+# The Gradle wrapper jar IS committed so `./gradlew` works on a fresh clone.
 *.apk
 *.aab
 
