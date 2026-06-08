@@ -1,3 +1,8 @@
-pyfluidsynth
-mido
-python-rtmidi
+# Dependencies are defined in pyproject.toml (the source of truth).
+# Install the project with:  pip install .
+# These libraries also require system packages: libfluidsynth and an ALSA/
+# librtmidi development stack (e.g. on Debian/Ubuntu:
+#   sudo apt install fluidsynth libasound2-dev).
+pyfluidsynth>=1.3.0
+mido>=1.3.0
+python-rtmidi>=1.5.0
