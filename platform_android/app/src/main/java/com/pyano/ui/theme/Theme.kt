@@ -1,3 +1,5 @@
+// Theme: Defines the Pyano Material3 color scheme and typography for the Compose UI.
+// NOT concerned with: screen layout, business logic, or audio state.
 package com.pyano.ui.theme
 
 import androidx.compose.material3.MaterialTheme

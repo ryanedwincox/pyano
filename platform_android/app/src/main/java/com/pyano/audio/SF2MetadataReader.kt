@@ -1,3 +1,5 @@
+// SF2MetadataReader: Parses SoundFont (.sf2) RIFF chunks to extract bank/preset metadata without loading the synth.
+// NOT concerned with: audio rendering, FluidSynth runtime, or UI presentation.
 package com.pyano.audio
 
 import java.io.File

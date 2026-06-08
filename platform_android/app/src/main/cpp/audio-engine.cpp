@@ -1,3 +1,5 @@
+// audio-engine.cpp: Native real-time audio core — FluidSynth synthesis + Oboe output, metronome, and recording.
+// NOT concerned with: JNI marshaling (see native-lib.c), UI state, or Kotlin-level logic.
 #include <oboe/Oboe.h>
 #include <android/log.h>
 #include <cmath>
@@ -43,7 +45,6 @@ public:
     static constexpr size_t kRecordingBufferFloats = 48000 * 2 * 60;
     SpscRingBuffer<float>* recordingBuffer = nullptr;
     std::atomic<bool> recordingActive{false};
-    std::atomic<bool> recordingOverflow{false};
 
     // Metronome state. Control fields are atomic (UI/RT thread). RT-only state
     // (sample counter, pending noteoff) is touched only by the RT audio thread.
@@ -264,17 +265,12 @@ public:
 
     // --- Recording control (called from UI/drain thread) ---
 
-    bool getRecordingOverflow() {
-        return recordingOverflow.exchange(false, std::memory_order_relaxed);
-    }
-
     void startRecording() {
         if (!recordingBuffer) {
             recordingBuffer = new SpscRingBuffer<float>(kRecordingBufferFloats);
         } else {
             recordingBuffer->reset();
         }
-        recordingOverflow.store(false, std::memory_order_relaxed);
         recordingActive.store(true, std::memory_order_release);
         LOGI("Recording started");
     }
@@ -447,10 +443,7 @@ public:
             // Recording: write rendered audio to ring buffer (RT-safe, no alloc/lock/log)
             if (recordingActive.load(std::memory_order_acquire) && recordingBuffer) {
                 size_t expected = static_cast<size_t>(numFrames * 2);
-                size_t written = recordingBuffer->write(output, expected);
-                if (written < expected) {
-                    recordingOverflow.store(true, std::memory_order_relaxed);
-                }
+                recordingBuffer->write(output, expected);
             }
 
             // Compute peak level for output meter
@@ -464,11 +457,6 @@ public:
             float prev = peakLevel.load();
             if (peak > prev) {
                 peakLevel.store(peak);
-                // Log occasionally when there's significant audio
-                static int logCounter = 0;
-                if (peak > 0.01f && (logCounter++ % 200) == 0) {
-                    LOGI("Audio output peak: %.4f", peak);
-                }
             }
         } else {
             memset(output, 0, numFrames * 2 * sizeof(float));
@@ -649,11 +637,6 @@ int engine_read_recording_buffer(void* ptr, float* out, int maxFloats) {
 int engine_get_recording_sample_rate(void* ptr) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     return engine ? engine->getRecordingSampleRate() : 48000;
-}
-
-int engine_get_recording_overflow(void* ptr) {
-    auto* engine = static_cast<PyanoEngine*>(ptr);
-    return engine && engine->getRecordingOverflow() ? 1 : 0;
 }
 
 } // extern "C"

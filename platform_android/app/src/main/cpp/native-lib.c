@@ -1,3 +1,5 @@
+// native-lib.c: JNI bridge — marshals FluidSynthEngine external calls to the C++ PyanoEngine C wrappers.
+// NOT concerned with: audio rendering, DSP, or FluidSynth/Oboe internals (those live in audio-engine.cpp).
 #include <jni.h>
 #include <stdio.h>
 #include <android/log.h>
@@ -44,7 +46,6 @@ void engine_start_recording(void* engine);
 void engine_stop_recording(void* engine);
 int engine_read_recording_buffer(void* engine, float* out, int maxFloats);
 int engine_get_recording_sample_rate(void* engine);
-int engine_get_recording_overflow(void* engine);
 
 // JNI functions
 
@@ -259,12 +260,6 @@ JNIEXPORT jint JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeGetRecordingSampleRate(JNIEnv* env, jobject thiz,
                                                                     jlong ptr) {
     return engine_get_recording_sample_rate((void*)(intptr_t)ptr);
-}
-
-JNIEXPORT jboolean JNICALL
-Java_com_pyano_audio_FluidSynthEngine_nativeGetRecordingOverflow(JNIEnv* env, jobject thiz,
-                                                                   jlong ptr) {
-    return engine_get_recording_overflow((void*)(intptr_t)ptr) ? JNI_TRUE : JNI_FALSE;
 }
 
 #ifdef __cplusplus

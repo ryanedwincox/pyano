@@ -1,3 +1,5 @@
+// FluidSynthEngine: Kotlin binding over the native FluidSynth/Oboe engine — notes, effects, metronome, recording.
+// NOT concerned with: MIDI byte parsing, DSP math, or UI state.
 package com.pyano.audio
 
 import android.content.Context
@@ -154,11 +156,6 @@ class FluidSynthEngine {
         return nativeGetRecordingSampleRate(enginePtr)
     }
 
-    fun getRecordingOverflow(): Boolean {
-        if (enginePtr == 0L) return false
-        return nativeGetRecordingOverflow(enginePtr)
-    }
-
     fun getPresets(sfId: Int): List<SfPreset> {
         if (enginePtr == 0L) return emptyList()
         val raw = nativeGetPresets(enginePtr, sfId)
@@ -247,5 +244,4 @@ class FluidSynthEngine {
     private external fun nativeStopRecording(ptr: Long)
     private external fun nativeReadRecordingBuffer(ptr: Long, buffer: FloatArray, maxFloats: Int): Int
     private external fun nativeGetRecordingSampleRate(ptr: Long): Int
-    private external fun nativeGetRecordingOverflow(ptr: Long): Boolean
 }

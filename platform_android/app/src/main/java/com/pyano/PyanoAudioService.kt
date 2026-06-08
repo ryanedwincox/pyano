@@ -1,3 +1,5 @@
+// PyanoAudioService: Minimal foreground service that keeps the process alive and signals "media playing" to the OS.
+// NOT concerned with: owning or managing the audio engine (that lives in PyanoViewModel), MIDI, or UI.
 package com.pyano
 
 import android.app.Notification
@@ -12,12 +14,6 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
-/**
- * Minimal foreground service that exists solely to keep the Pyano process alive
- * (and signal "media playback in progress" to the OS) while the device is locked
- * or the app is backgrounded. The audio engine itself lives in PyanoViewModel —
- * this service does not own or manage it.
- */
 class PyanoAudioService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null

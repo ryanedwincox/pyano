@@ -1,3 +1,5 @@
+// PyanoViewModel: Central app state holder — owns the audio engine, MIDI, metronome, loop, and recording UI state.
+// NOT concerned with: low-level DSP, JNI bindings, or Compose rendering.
 package com.pyano
 
 import android.app.Application

@@ -1,3 +1,5 @@
+// MainActivity: Compose entry point — wires permissions, the foreground service, and the root UI to the ViewModel.
+// NOT concerned with: audio engine internals, MIDI parsing, or DSP.
 package com.pyano
 
 import android.Manifest

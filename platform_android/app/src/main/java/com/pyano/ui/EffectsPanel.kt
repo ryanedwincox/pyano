@@ -1,3 +1,5 @@
+// EffectsPanel: Compose UI for reverb/chorus/gain effect controls plus shared slider/meter widgets.
+// NOT concerned with: applying effects to audio, DSP math, or engine state ownership.
 package com.pyano.ui
 
 import androidx.compose.foundation.layout.*
