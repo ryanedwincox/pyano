@@ -167,6 +167,13 @@ cd platform_android
 ./gradlew installDebug
 ```
 
+> **Build status:** For the Android app, only the debug-signed build
+> (`./gradlew assembleDebug`) is currently configured and tested; no signed
+> release build is set up. Release signing reads its keystore credentials from
+> environment variables / Gradle properties, but no keystore is included — you
+> must supply your own to produce a release APK. (The Linux CLI has no build
+> step — it just runs via Python — so this caveat applies only to Android.)
+
 ## Tests
 
 Test scaffolding is being added concurrently.
