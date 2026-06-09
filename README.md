@@ -1,25 +1,17 @@
 # Pyano
 
-A MIDI-to-SoundFont synthesizer — turn a MIDI keyboard into a real instrument, on Linux and Android.
+An Android MIDI-to-SoundFont synthesizer and mobile music workstation — turn a MIDI keyboard into a real instrument, with a metronome, loop station, recorder, and mastering suite.
 
 > _This repo was generated entirely by Claude._
 
 ## Overview
 
-Pyano renders live MIDI input through [FluidSynth](https://github.com/FluidSynth/fluidsynth)
-and a user-supplied `.sf2` SoundFont, giving you a low-latency software instrument
-driven by any connected MIDI controller. The repo ships **two independent
-implementations of the same idea**, each in its own directory:
-
-- **`platform_linux/`** — a Python 3 command-line synth (`pyano.py`). Plug in a
-  MIDI keyboard, point it at a SoundFont, and play. Auto-detects MIDI port and
-  audio device, with full reverb/chorus/gain/buffer controls.
-- **`platform_android/`** — a Kotlin / Jetpack Compose app backed by native
-  C/C++ (Oboe + FluidSynth). A full mobile music workstation: synth, metronome,
-  loop station, recorder, and a mastering DSP suite.
-
-Both platforms share the same conceptual core: a FluidSynth synthesis engine fed
-by a MIDI event stream, mixed out through the platform's lowest-latency audio path.
+Pyano is an Android app that renders live MIDI input through
+[FluidSynth](https://github.com/FluidSynth/fluidsynth) and a user-supplied `.sf2`
+SoundFont, giving you a low-latency software instrument driven by any connected
+MIDI controller. It is a Kotlin / Jetpack Compose app backed by native C/C++
+(Oboe + FluidSynth): a full mobile music workstation pairing the synth with a
+metronome, loop station, recorder, and a mastering DSP suite.
 
 ## Screenshots
 
@@ -37,24 +29,6 @@ The Android app (tablet, portrait):
 
 ## Features
 
-### Linux CLI (`platform_linux/`)
-
-- Live MIDI-keyboard playback through any `.sf2` SoundFont via FluidSynth.
-- Auto-detection of the MIDI input port (prefers non-"Through" ports; accepts a
-  port name or index via `--port`).
-- Auto-detection of the ALSA playback device (matches an Arturia interface by
-  default; override with `--device`).
-- Selectable audio driver: `alsa`, `pipewire`, `jack`, `pulseaudio`.
-- Low-latency tuning: configurable period size / buffer (`--buffer`, default 256)
-  and gain (`--gain`).
-- Full reverb controls (room, damping, width, level) and chorus controls
-  (voices, level, speed, depth, sine/triangle waveform); either can be disabled.
-- `--list` to enumerate MIDI ports; an interactive test-tone fallback that plays
-  typed note numbers when no MIDI port is present.
-- Filters out CC7 (volume) and CC11 (expression); forwards other control changes.
-
-### Android app (`platform_android/`)
-
 - **Synth** — touch keyboard and live MIDI (USB host) into FluidSynth, with a
   SoundFont browser and an effects panel.
 - **Metronome** — BPM control with audible click.
@@ -68,66 +42,37 @@ The Android app (tablet, portrait):
 
 ## Tech stack
 
-| Area | Linux CLI | Android app |
-| --- | --- | --- |
-| Language | Python 3 | Kotlin 2.0.0 + C/C++ (C17 / C11) |
-| UI | argparse CLI | Jetpack Compose (Material 3) |
-| Synth core | FluidSynth (via `pyfluidsynth`) | FluidSynth 2.3.3 (native `.so`) |
-| Audio I/O | ALSA / PipeWire / JACK / PulseAudio | Oboe 1.9.0 |
-| MIDI | `mido` + `python-rtmidi` | Android MIDI API + custom parser |
-| Build | `pip` (`requirements.txt` / `pyproject.toml`) | Gradle 8.9, AGP 8.5.0, NDK + CMake 3.22.1 |
-| Targets | Linux desktop | SDK 26+ (min/target/compile 26/35/35), JVM 17 |
+| Area | Android app |
+| --- | --- |
+| Language | Kotlin 2.0.0 + C/C++ (C17 / C11) |
+| UI | Jetpack Compose (Material 3) |
+| Synth core | FluidSynth 2.3.3 (native `.so`) |
+| Audio I/O | Oboe 1.9.0 |
+| MIDI | Android MIDI API + custom parser |
+| Build | Gradle 8.9, AGP 8.5.0, NDK + CMake 3.22.1 |
+| Targets | SDK 26+ (min/target/compile 26/35/35), JVM 17 |
 
 ## Architecture
 
-The Android app is layered; the Linux CLI is a single module wrapping the same
-synth core:
+The Android app is layered:
 
 ```
-Android:
-  ui/ (Compose tabs)
-        │
-        ▼
-  PyanoViewModel ──► midi/ (device mgr + event parser)
-        │
-        ▼
-  audio/ (FluidSynthEngine, LoopEngine, AudioRecorder, MasteringEngine)
-        │  JNI
-        ▼
-  cpp/ (native-lib.c, audio-engine.cpp) ──► Oboe (RT callback) + FluidSynth
-
-Linux:
-  pyano.py ──► mido (MIDI in) ──► fluidsynth.Synth ──► ALSA/PipeWire/JACK/Pulse
+ui/ (Compose tabs)
+      │
+      ▼
+PyanoViewModel ──► midi/ (device mgr + event parser)
+      │
+      ▼
+audio/ (FluidSynthEngine, LoopEngine, AudioRecorder, MasteringEngine)
+      │  JNI
+      ▼
+cpp/ (native-lib.c, audio-engine.cpp) ──► Oboe (RT callback) + FluidSynth
 ```
 
-On both platforms the synthesis core is FluidSynth loading a `.sf2` SoundFont;
-the difference is the host language and the real-time audio path (Oboe on
-Android, the FluidSynth audio driver on Linux).
+The synthesis core is FluidSynth loading a `.sf2` SoundFont, mixed out through
+Oboe's lowest-latency audio path.
 
 ## Build & Run
-
-### Linux CLI
-
-Requires a system FluidSynth/ALSA stack and a `.sf2` SoundFont (not included —
-the MIT-licensed [FluidR3_GM](https://member.keymusician.com/Member/FluidR3_GM/)
-is a good default).
-
-```bash
-# Install dependencies
-pip install -r platform_linux/requirements.txt
-# or, once pyproject.toml is present, install the package + `pyano` command:
-pip install platform_linux/
-
-# Run against a SoundFont
-python3 platform_linux/pyano.py path/to/soundfont.sf2
-#   (or, after `pip install`):  pyano path/to/soundfont.sf2
-
-# List MIDI ports / play without a keyboard
-python3 platform_linux/pyano.py --list
-python3 platform_linux/pyano.py path/to/soundfont.sf2   # type note numbers if no port
-```
-
-### Android
 
 **Prerequisites:** Android SDK platforms 34 & 35, the NDK, CMake **3.22.1**, and
 **JDK 21** (Gradle 8.9 does not run on JDK 24/25 — use 21).
@@ -167,21 +112,17 @@ cd platform_android
 ./gradlew installDebug
 ```
 
-> **Build status:** For the Android app, only the debug-signed build
-> (`./gradlew assembleDebug`) is currently configured and tested; no signed
-> release build is set up. Release signing reads its keystore credentials from
-> environment variables / Gradle properties, but no keystore is included — you
-> must supply your own to produce a release APK. (The Linux CLI has no build
-> step — it just runs via Python — so this caveat applies only to Android.)
+> **Build status:** Only the debug-signed build (`./gradlew assembleDebug`) is
+> currently configured and tested; no signed release build is set up. Release
+> signing reads its keystore credentials from environment variables / Gradle
+> properties, but no keystore is included — you must supply your own to produce a
+> release APK.
 
 ## Tests
 
 Test scaffolding is being added concurrently.
 
 ```bash
-# Linux: lint + type-check + unit tests (ruff + mypy + pytest)
-cd platform_linux && ./run-tests.sh
-
 # Android: JVM unit tests
 cd platform_android && ./gradlew testDebugUnitTest
 ```
@@ -190,9 +131,6 @@ cd platform_android && ./gradlew testDebugUnitTest
 
 ```
 .
-├── platform_linux/
-│   ├── pyano.py            # CLI synth (argparse, FluidSynth, mido)
-│   └── requirements.txt    # pyfluidsynth, mido, python-rtmidi
 ├── platform_android/       # Kotlin + Compose + native C/C++ app (com.pyano)
 │   ├── app/src/main/
 │   │   ├── java/com/pyano/
@@ -202,7 +140,10 @@ cd platform_android && ./gradlew testDebugUnitTest
 │   │   │   └── *.kt        # MainActivity, PyanoViewModel, PyanoAudioService
 │   │   └── cpp/            # native-lib.c, audio-engine.cpp, CMakeLists.txt (Oboe + FluidSynth)
 │   └── fluidsynth-libs/    # user-supplied native libs + headers (gitignored)
-└── docs/screenshots/       # tablet captures used above
+├── docs/screenshots/       # tablet captures used above
+├── README.md
+├── LICENSE
+└── THIRD_PARTY_NOTICES.md
 ```
 
 ## License & attribution

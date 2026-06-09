@@ -1,8 +1,5 @@
-.venv/
 *.tar.xz
 SalamanderGrandPiano*/
-__pycache__/
-*.pyc
 
 # Android
 platform_android/.gradle/

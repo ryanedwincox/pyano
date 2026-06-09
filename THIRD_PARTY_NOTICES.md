@@ -5,42 +5,37 @@ Pyano is licensed under the MIT License (see `LICENSE`).
 This file lists third-party components that Pyano **depends on, links against, or
 redistributes** — including components that are not committed to this repository
 but that a builder must supply or that the build fetches automatically (the
-FluidSynth native libraries, the Oboe library, the Python dependencies, and the
-recommended SoundFont). Each entry records the component name, version, license,
-upstream source, and any obligations that apply. Pure development tooling that is
-not shipped is not listed here.
+FluidSynth native libraries, the Oboe library, and the recommended SoundFont).
+Each entry records the component name, version, license, upstream source, and any
+obligations that apply. Pure development tooling that is not shipped is not listed
+here.
 
 Several components below are **not bundled in this repository**: the FluidSynth
-native `.so` libraries are gitignored (the builder supplies them), no SoundFont
-is shipped, and the Python packages are installed from PyPI at the user's site.
-They are documented anyway so that anyone redistributing a built artifact knows
-the obligations they inherit.
+native `.so` libraries are gitignored (the builder supplies them) and no SoundFont
+is shipped. They are documented anyway so that anyone redistributing a built APK
+knows the obligations they inherit.
 
 ---
 
 ## FluidSynth
 
 - **Name:** FluidSynth (libfluidsynth)
-- **Version:** 2.3.3 on Android (from
+- **Version:** 2.3.3 (from
   `platform_android/fluidsynth-libs/include/fluidsynth/version.h`,
-  `FLUIDSYNTH_VERSION "2.3.3"`, when the libs are supplied); the Linux CLI uses
-  whatever FluidSynth the system / `pyfluidsynth` provides.
+  `FLUIDSYNTH_VERSION "2.3.3"`, when the libs are supplied).
 - **License:** GNU Lesser General Public License, version 2.1 (LGPL-2.1)
 - **Source:** https://github.com/FluidSynth/fluidsynth
-- **Form used / redistributed:**
-  - **Android:** prebuilt shared libraries (`libfluidsynth.so`) for the ABIs
-    `arm64-v8a`, `armeabi-v7a`, and `x86_64`, plus public headers, expected under
-    `platform_android/fluidsynth-libs/`. These libraries are **NOT committed to
-    this repo** (gitignored); the builder supplies them and they are bundled into
-    any resulting APK.
-  - **Linux:** linked dynamically via the `pyfluidsynth` Python binding against
-    the system `libfluidsynth`.
+- **Form used / redistributed:** prebuilt shared libraries (`libfluidsynth.so`)
+  for the ABIs `arm64-v8a`, `armeabi-v7a`, and `x86_64`, plus public headers,
+  expected under `platform_android/fluidsynth-libs/`. These libraries are **NOT
+  committed to this repo** (gitignored); the builder supplies them and they are
+  bundled into any resulting APK.
 
 **Obligation note (LGPL-2.1):**
 The full text of the GNU LGPL-2.1 must accompany any distribution that includes
 FluidSynth (https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html). FluidSynth
-is used as a **dynamically linked** shared library on both platforms, so a user
-can replace/relink it with a modified version, satisfying LGPL-2.1 §6. To remain
+is used as a **dynamically linked** shared library, so a user can replace/relink
+it with a modified version, satisfying LGPL-2.1 §6. To remain
 compliant, the corresponding source for the exact FluidSynth version built/used,
 or a written offer to provide it, must be made available to recipients. Upstream
 source (including the v2.3.3 tagged release used by the Android build) is at:
@@ -95,48 +90,6 @@ redistributed Apache-2.0 components.
 
 ---
 
-## pyfluidsynth (Linux Python dependency)
-
-- **Name:** pyfluidsynth (Python module `fluidsynth`)
-- **License:** GNU Lesser General Public License, version 2.1 (LGPL-2.1)
-- **Source:** https://github.com/nwhitehead/pyfluidsynth (PyPI: `pyfluidsynth`)
-- **Form used:** Installed from PyPI (`platform_linux/requirements.txt`); a thin
-  ctypes binding that dynamically loads the system FluidSynth library at runtime.
-
-**Obligation note (LGPL-2.1):**
-As with FluidSynth itself, the LGPL-2.1 terms apply; the binding loads FluidSynth
-dynamically, so recipients can relink against a modified FluidSynth. Retain the
-LGPL-2.1 text and a source offer when redistributing.
-
----
-
-## mido (Linux Python dependency)
-
-- **Name:** mido (MIDI Objects for Python)
-- **License:** MIT License
-- **Source:** https://github.com/mido/mido (PyPI: `mido`)
-- **Form used:** Installed from PyPI (`platform_linux/requirements.txt`); used to
-  enumerate and read MIDI input ports.
-
-**Obligation note (MIT):** Retain the copyright and permission notice when
-redistributing.
-
----
-
-## python-rtmidi (Linux Python dependency)
-
-- **Name:** python-rtmidi
-- **License:** MIT License (the Python binding; it wraps the RtMidi C++ library,
-  which is also MIT-licensed)
-- **Source:** https://github.com/SpotlightKid/python-rtmidi (PyPI: `python-rtmidi`)
-- **Form used:** Installed from PyPI (`platform_linux/requirements.txt`); the MIDI
-  I/O backend used by `mido`.
-
-**Obligation note (MIT):** Retain the copyright and permission notice when
-redistributing.
-
----
-
 ## FluidR3_GM.sf2 (recommended SoundFont — NOT bundled)
 
 - **Name:** Fluid (R3) GM SoundFont (`FluidR3_GM.sf2`)
@@ -151,8 +104,7 @@ redistributing.
   point referenced by downstream packagers). License corroboration:
   https://github.com/musescore/MuseScore/blob/master/share/sound/FluidR3Mono_License.md
 - **Form used / redistributed:** **NOT bundled in this repository.** Pyano
-  recommends it as the default SoundFont; the user supplies a `.sf2` at runtime
-  on both platforms.
+  recommends it as the default SoundFont; the user supplies a `.sf2` at runtime.
 
 **Obligation note (MIT):**
 If you redistribute this SoundFont, the MIT permission notice and the copyright
