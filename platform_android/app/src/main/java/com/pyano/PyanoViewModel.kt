@@ -446,7 +446,8 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             val msg = "xruns=${stats.xruns} (+$newXruns) buffer=${stats.bufferFrames}f " +
                 "(%.1f ms) burst=${stats.burstFrames}f callback=${stats.callbackFrames}f ".format(stats.bufferMs) +
                 "maxCallback=${stats.maxCallbackMicros}us load=%.0f%% ".format(load * 100) +
-                "peakVoices=${stats.peakVoices} rate=${stats.sampleRate}"
+                "peakVoices=${stats.peakVoices} rate=${stats.sampleRate} " +
+                "droppedEvents=${stats.droppedEvents} lockedOut=${stats.lockedOutCallbacks}"
             if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN) Log.w(AUDIO_TAG, msg) else Log.i(AUDIO_TAG, msg)
         }
         return stats.xruns

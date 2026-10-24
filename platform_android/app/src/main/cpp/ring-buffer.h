@@ -1,4 +1,4 @@
-// ring-buffer.h: Lock-free single-producer single-consumer ring buffer for RT audio capture.
+// ring-buffer.h: Lock-free single-producer single-consumer ring buffer for RT audio capture and synth events.
 // NOT concerned with: multi-producer, multi-consumer, or resizable buffers.
 #pragma once
 

@@ -21,6 +21,10 @@ data class AudioStats(
     val maxCallbackMicros: Int,
     val peakVoices: Int,
     val sampleRate: Int,
+    /** Synth events discarded because the native event queue was full. */
+    val droppedEvents: Int,
+    /** Callbacks that output silence because a SoundFont load held the synth. */
+    val lockedOutCallbacks: Int,
 ) {
     val bufferMs: Float get() = if (sampleRate > 0) bufferFrames * 1000f / sampleRate else 0f
 
@@ -124,9 +128,9 @@ class FluidSynthEngine {
 
     fun getAudioStats(): AudioStats? {
         if (enginePtr == 0L) return null
-        val v = IntArray(7)
+        val v = IntArray(9)
         if (nativeGetAudioStats(enginePtr, v) < v.size) return null
-        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6])
+        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8])
     }
 
     // --- Metronome ---

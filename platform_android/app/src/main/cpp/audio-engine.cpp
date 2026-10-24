@@ -5,8 +5,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
+#include <map>
 #include <mutex>
 #include <atomic>
+#include <string>
+#include <vector>
 
 #include "ring-buffer.h"
 
@@ -28,12 +32,46 @@ static constexpr int kMetronomeDownbeatVelocity = 120;
 static constexpr int kMetronomeSubbeatVelocity  = 85;
 static constexpr int kMetronomeNoteOffMs = 80;
 
+// A MIDI or control change handed from a non-RT thread to the audio callback,
+// which applies it to the synth just before rendering. Trivially copyable so it
+// can travel through SpscRingBuffer.
+struct SynthEvent {
+    enum Type : uint8_t { NoteOn, NoteOff, CC, ProgramSelect, Gain, Reverb, ReverbOn,
+                          Chorus, ChorusOn };
+    Type type;
+    int32_t i[4];
+    float f[4];
+};
+
+struct CachedPreset {
+    int bank;
+    int program;
+    std::string name;
+};
+
+// Threading model: FluidSynth runs with its internal API lock disabled and the
+// audio callback is the only thread that touches the synth during playback.
+// Notes, CCs and effect changes are queued (pushEvent) and applied at the top
+// of the next callback. Heavy operations that must run elsewhere (SoundFont
+// loading, sample-rate changes, teardown) take synthMutex; the callback only
+// try_locks it and outputs silence for that buffer instead of blocking.
 class PyanoEngine : public oboe::AudioStreamCallback {
 public:
     fluid_settings_t* settings = nullptr;
     fluid_synth_t* synth = nullptr;
     oboe::ManagedStream stream;
     std::mutex synthMutex;
+
+    // Event queue: any number of producers serialized by producerMutex, one
+    // consumer (the RT callback) that never takes a lock.
+    static constexpr size_t kEventQueueCapacity = 1024;
+    SpscRingBuffer<SynthEvent> eventQueue{kEventQueueCapacity};
+    std::mutex producerMutex;
+
+    // Preset lists captured at load time so the UI never has to walk a
+    // SoundFont while the audio thread owns the synth. Keyed by sfId.
+    std::mutex presetCacheMutex;
+    std::map<int, std::vector<CachedPreset>> presetCache;
     int sampleRate = 48000;
     int bufferSize = 256;
     int audioDeviceId = oboe::kUnspecified;
@@ -51,6 +89,8 @@ public:
     std::atomic<int> lastCallbackFrames{0};
     std::atomic<int> maxCallbackMicros{0};
     std::atomic<int> peakActiveVoices{0};
+    std::atomic<int> droppedEvents{0};          // queue full; event discarded
+    std::atomic<int> lockedOutCallbacks{0};     // callback output silence: synth busy (load)
 
     // Recording ring buffer: allocated once, reused across recordings
     // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
@@ -87,7 +127,9 @@ public:
         fluid_settings_setnum(settings, "synth.sample-rate", (double)sampleRate);
         fluid_settings_setint(settings, "synth.audio-channels", 1); // 1 stereo pair
         fluid_settings_setint(settings, "synth.polyphony", 512);
-        fluid_settings_setint(settings, "synth.threadsafe-api", 1);
+        // Only the audio callback (or a holder of synthMutex) calls into the synth,
+        // so FluidSynth's own API mutex would only add contention with the RT thread.
+        fluid_settings_setint(settings, "synth.threadsafe-api", 0);
 
         synth = new_fluid_synth(settings);
         if (!synth) {
@@ -196,71 +238,120 @@ public:
             fluid_synth_program_select(synth, kMetronomeChannel, metronomeDrumSfId,
                                        kMetronomeDrumBank, kMetronomeDrumPreset);
         }
+        cachePresetsLocked(sfId);
         LOGI("Loaded soundfont: %s (id=%d)", path, sfId);
         return sfId;
     }
 
-    void programSelect(int channel, int sfId, int bank, int preset) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (synth) fluid_synth_program_select(synth, channel, sfId, bank, preset);
+    // Caller must hold synthMutex.
+    void cachePresetsLocked(int sfId) {
+        fluid_sfont_t* sfont = fluid_synth_get_sfont_by_id(synth, sfId);
+        if (!sfont) return;
+        std::vector<CachedPreset> presets;
+        fluid_sfont_iteration_start(sfont);
+        fluid_preset_t* preset;
+        while ((preset = fluid_sfont_iteration_next(sfont)) != nullptr) {
+            const char* name = fluid_preset_get_name(preset);
+            presets.push_back({fluid_preset_get_banknum(preset), fluid_preset_get_num(preset),
+                               name ? name : ""});
+        }
+        std::lock_guard<std::mutex> lock(presetCacheMutex);
+        presetCache[sfId] = std::move(presets);
     }
 
-    // MIDI events — called from MIDI thread, must be fast
-    void noteOn(int channel, int note, int velocity) {
-        if (synth) {
-            fluid_synth_noteon(synth, channel, note, velocity);
-        } else {
-            LOGE("noteOn called but synth is null! ch=%d note=%d vel=%d", channel, note, velocity);
+    // Called from any non-RT thread. Never blocks on the audio thread.
+    void pushEvent(const SynthEvent& ev) {
+        std::lock_guard<std::mutex> lock(producerMutex);
+        if (eventQueue.write(&ev, 1) == 0) {
+            droppedEvents.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
+    void programSelect(int channel, int sfId, int bank, int preset) {
+        pushEvent({SynthEvent::ProgramSelect, {channel, sfId, bank, preset}, {}});
+    }
+
+    void noteOn(int channel, int note, int velocity) {
+        pushEvent({SynthEvent::NoteOn, {channel, note, velocity, 0}, {}});
+    }
+
     void noteOff(int channel, int note) {
-        if (synth) fluid_synth_noteoff(synth, channel, note);
+        pushEvent({SynthEvent::NoteOff, {channel, note, 0, 0}, {}});
     }
 
     void cc(int channel, int ctrl, int value) {
-        if (synth) fluid_synth_cc(synth, channel, ctrl, value);
+        pushEvent({SynthEvent::CC, {channel, ctrl, value, 0}, {}});
     }
 
     void setGain(float gain) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (synth) fluid_synth_set_gain(synth, gain);
+        pushEvent({SynthEvent::Gain, {}, {gain, 0, 0, 0}});
     }
 
     void setReverb(float roomsize, float damping, float width, float level) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (synth) fluid_synth_set_reverb(synth, roomsize, damping, width, level);
+        pushEvent({SynthEvent::Reverb, {}, {roomsize, damping, width, level}});
     }
 
     void setChorus(int nr, float level, float speed, float depth, int type) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (synth) fluid_synth_set_chorus(synth, nr, level, speed, depth, type);
+        pushEvent({SynthEvent::Chorus, {nr, type, 0, 0}, {level, speed, depth, 0}});
     }
 
     void setReverbOn(bool on) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (synth) fluid_synth_set_reverb_on(synth, on ? 1 : 0);
+        pushEvent({SynthEvent::ReverbOn, {on ? 1 : 0, 0, 0, 0}, {}});
     }
 
     void setChorusOn(bool on) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (synth) fluid_synth_set_chorus_on(synth, on ? 1 : 0);
+        pushEvent({SynthEvent::ChorusOn, {on ? 1 : 0, 0, 0, 0}, {}});
     }
 
-    // Returns preset count and fills arrays with bank, program, name for each
-    int getPresets(int sfId, int* banks, int* programs, const char** names, int maxPresets) {
-        std::lock_guard<std::mutex> lock(synthMutex);
-        if (!synth) return 0;
-        fluid_sfont_t* sfont = fluid_synth_get_sfont_by_id(synth, sfId);
-        if (!sfont) return 0;
+    // RT thread only, with synthMutex held.
+    void drainEvents() {
+        SynthEvent ev;
+        while (eventQueue.read(&ev, 1) == 1) {
+            switch (ev.type) {
+                case SynthEvent::NoteOn:
+                    fluid_synth_noteon(synth, ev.i[0], ev.i[1], ev.i[2]);
+                    break;
+                case SynthEvent::NoteOff:
+                    fluid_synth_noteoff(synth, ev.i[0], ev.i[1]);
+                    break;
+                case SynthEvent::CC:
+                    fluid_synth_cc(synth, ev.i[0], ev.i[1], ev.i[2]);
+                    break;
+                case SynthEvent::ProgramSelect:
+                    fluid_synth_program_select(synth, ev.i[0], ev.i[1], ev.i[2], ev.i[3]);
+                    break;
+                case SynthEvent::Gain:
+                    fluid_synth_set_gain(synth, ev.f[0]);
+                    break;
+                case SynthEvent::Reverb:
+                    fluid_synth_set_reverb(synth, ev.f[0], ev.f[1], ev.f[2], ev.f[3]);
+                    break;
+                case SynthEvent::ReverbOn:
+                    fluid_synth_set_reverb_on(synth, ev.i[0]);
+                    break;
+                case SynthEvent::Chorus:
+                    fluid_synth_set_chorus(synth, ev.i[0], ev.f[0], ev.f[1], ev.f[2], ev.i[1]);
+                    break;
+                case SynthEvent::ChorusOn:
+                    fluid_synth_set_chorus_on(synth, ev.i[0]);
+                    break;
+            }
+        }
+    }
 
-        fluid_sfont_iteration_start(sfont);
+    // Returns preset count and fills arrays with bank, program, name for each.
+    // Name pointers stay valid until destroy(): cache entries are never replaced
+    // because FluidSynth never reuses an sfId.
+    int getPresets(int sfId, int* banks, int* programs, const char** names, int maxPresets) {
+        std::lock_guard<std::mutex> lock(presetCacheMutex);
+        auto it = presetCache.find(sfId);
+        if (it == presetCache.end()) return 0;
         int count = 0;
-        fluid_preset_t* preset;
-        while ((preset = fluid_sfont_iteration_next(sfont)) != nullptr && count < maxPresets) {
-            banks[count] = fluid_preset_get_banknum(preset);
-            programs[count] = fluid_preset_get_num(preset);
-            names[count] = fluid_preset_get_name(preset);
+        for (const auto& p : it->second) {
+            if (count >= maxPresets) break;
+            banks[count] = p.bank;
+            programs[count] = p.program;
+            names[count] = p.name.c_str();
             count++;
         }
         return count;
@@ -284,7 +375,7 @@ public:
     }
 
     // Fills out[kAudioStatsCount]; see the layout comment on engine_get_audio_stats.
-    static constexpr int kAudioStatsCount = 7;
+    static constexpr int kAudioStatsCount = 9;
     void getAudioStats(int* out) {
         out[0] = totalXruns.load(std::memory_order_relaxed);
         out[1] = streamBufferFrames.load(std::memory_order_relaxed);
@@ -293,6 +384,8 @@ public:
         out[4] = maxCallbackMicros.exchange(0, std::memory_order_relaxed);
         out[5] = peakActiveVoices.exchange(0, std::memory_order_relaxed);
         out[6] = sampleRate;
+        out[7] = droppedEvents.load(std::memory_order_relaxed);
+        out[8] = lockedOutCallbacks.load(std::memory_order_relaxed);
     }
 
     // --- Recording control (called from UI/drain thread) ---
@@ -376,6 +469,7 @@ public:
             return -1;
         }
         metronomeDrumSfId = sfId;
+        cachePresetsLocked(sfId);
         int rc = fluid_synth_program_select(synth, kMetronomeChannel, sfId,
                                             kMetronomeDrumBank, kMetronomeDrumPreset);
         if (rc == FLUID_FAILED) {
@@ -482,7 +576,16 @@ public:
         auto callbackStart = std::chrono::steady_clock::now();
         auto* output = static_cast<float*>(audioData);
 
-        if (synth) {
+        // Never wait for a non-RT thread: if a SoundFont load (or teardown) holds
+        // the synth, emit silence for this buffer and leave queued events for later.
+        std::unique_lock<std::mutex> lock(synthMutex, std::try_to_lock);
+        if (synth && !lock.owns_lock()) {
+            lockedOutCallbacks.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (synth && lock.owns_lock()) {
+            drainEvents();
+
             // Schedule metronome noteon/noteoff before render so they land
             // in this buffer's audio output
             processMetronomeTick(numFrames);
@@ -633,8 +736,9 @@ float engine_get_peak_level(void* ptr) {
     return engine ? engine->getPeakLevel() : 0.0f;
 }
 
-// Fills out[7]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
-// maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate}.
+// Fills out[9]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
+// maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate,
+// droppedEvents, lockedOutCallbacks}.
 // Returns the number of values written.
 int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
