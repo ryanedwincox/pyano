@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pyano.audio.AudioRecorder
+import com.pyano.audio.AudioStats
 import com.pyano.audio.FluidSynthEngine
 import com.pyano.audio.LoopEngine
 import com.pyano.audio.RecordingInfo
@@ -105,8 +106,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _gain = MutableStateFlow(prefs.getFloat("gain", 3.0f))
     val gain = _gain.asStateFlow()
 
-    private val _bufferSize = MutableStateFlow(prefs.getInt("bufferSize", 256))
+    // Output buffer size in frames; 0 = automatic (grows only on underruns). New pref
+    // key: the old "bufferSize" meant frames-per-callback, which is no longer set.
+    private val _bufferSize = MutableStateFlow(prefs.getInt("bufferFrames", 0))
     val bufferSize = _bufferSize.asStateFlow()
+
+    private val _audioStats = MutableStateFlow<AudioStats?>(null)
+    val audioStats = _audioStats.asStateFlow()
 
     // Reverb
     private val _reverbOn = MutableStateFlow(prefs.getBoolean("reverbOn", true))
@@ -246,7 +252,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val isLoading = _isLoading.asStateFlow()
 
     fun initialize() {
-        if (!engine.create(48000, _bufferSize.value)) {
+        if (!engine.create(nativeOutputSampleRate(), _bufferSize.value)) {
             Log.e(TAG, "Failed to create engine")
             return
         }
@@ -440,6 +446,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun logAudioStats(loggedXruns: Int, heartbeat: Boolean): Int {
         val stats = engine.getAudioStats() ?: return loggedXruns
+        _audioStats.value = stats
         val newXruns = stats.xruns - loggedXruns
         val load = stats.callbackLoad
         if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN || heartbeat) {
@@ -451,6 +458,12 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN) Log.w(AUDIO_TAG, msg) else Log.i(AUDIO_TAG, msg)
         }
         return stats.xruns
+    }
+
+    /** The default output's native rate, so the stream opens without resampling. */
+    private fun nativeOutputSampleRate(): Int {
+        val audioManager = getApplication<Application>().getSystemService(AudioManager::class.java)
+        return audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000
     }
 
     fun refreshAudioOutputs() {
@@ -647,7 +660,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setBufferSize(value: Int) {
         _bufferSize.value = value
-        save("bufferSize", value)
+        save("bufferFrames", value)
         engine.setBufferSize(value)
     }
 

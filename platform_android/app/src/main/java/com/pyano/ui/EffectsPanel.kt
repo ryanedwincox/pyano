@@ -111,7 +111,8 @@ fun BufferSizeSlider(
     onBufferSizeChange: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val steps = listOf(32, 64, 128, 256, 512, 1024)
+    // Output buffer size in frames; 0 = Auto (smallest size that doesn't underrun)
+    val steps = listOf(0, 64, 128, 256, 512, 1024)
     val index = steps.indexOf(bufferSize).coerceAtLeast(0)
 
     Row(
@@ -131,7 +132,7 @@ fun BufferSizeSlider(
             modifier = Modifier.weight(1f)
         )
         Text(
-            text = "$bufferSize",
+            text = if (bufferSize == 0) "Auto" else "$bufferSize",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.width(56.dp)
         )

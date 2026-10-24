@@ -21,6 +21,7 @@ fun SynthTab(viewModel: PyanoViewModel) {
     val selectedPresetIndex by viewModel.selectedPresetIndex.collectAsState()
     val gain by viewModel.gain.collectAsState()
     val bufferSize by viewModel.bufferSize.collectAsState()
+    val audioStats by viewModel.audioStats.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
 
     // Reverb state
@@ -215,6 +216,16 @@ fun SynthTab(viewModel: PyanoViewModel) {
                     SectionHeader("Gain / Buffer")
                     LabeledSlider("Gain", gain, 0f..10f, "%.1f", { viewModel.setGain(it) })
                     BufferSizeSlider(bufferSize, { viewModel.setBufferSize(it) })
+                    audioStats?.let { stats ->
+                        Text(
+                            text = "Output: ${stats.bufferFrames} frames (%.1f ms) · glitches: ${stats.xruns}"
+                                .format(stats.bufferMs),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (stats.xruns > 0) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
                 }
             }
 

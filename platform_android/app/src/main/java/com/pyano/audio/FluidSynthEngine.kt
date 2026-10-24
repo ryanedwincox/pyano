@@ -47,8 +47,9 @@ class FluidSynthEngine {
         }
     }
 
-    fun create(sampleRate: Int = 48000, bufferSize: Int = 256): Boolean {
-        enginePtr = nativeCreate(sampleRate, bufferSize)
+    /** [bufferFrames] is the output buffer size in frames; 0 = automatic tuning. */
+    fun create(sampleRate: Int = 48000, bufferFrames: Int = 0): Boolean {
+        enginePtr = nativeCreate(sampleRate, bufferFrames)
         return enginePtr != 0L
     }
 
@@ -111,9 +112,10 @@ class FluidSynthEngine {
         if (enginePtr != 0L) nativeSetChorusOn(enginePtr, on)
     }
 
-    fun setBufferSize(bufferSize: Int): Boolean {
+    /** Output buffer size in frames; 0 = automatic tuning. Restarts the stream. */
+    fun setBufferSize(bufferFrames: Int): Boolean {
         if (enginePtr == 0L) return false
-        return nativeSetBufferSize(enginePtr, bufferSize)
+        return nativeSetBufferSize(enginePtr, bufferFrames)
     }
 
     fun setAudioDevice(deviceId: Int): Boolean {
@@ -247,7 +249,7 @@ class FluidSynthEngine {
     }
 
     // Native methods
-    private external fun nativeCreate(sampleRate: Int, bufferSize: Int): Long
+    private external fun nativeCreate(sampleRate: Int, bufferFrames: Int): Long
     private external fun nativeDestroy(ptr: Long)
     private external fun nativeStartAudio(ptr: Long): Boolean
     private external fun nativeStopAudio(ptr: Long)
@@ -261,7 +263,7 @@ class FluidSynthEngine {
     private external fun nativeSetChorus(ptr: Long, nr: Int, level: Float, speed: Float, depth: Float, type: Int)
     private external fun nativeSetReverbOn(ptr: Long, on: Boolean)
     private external fun nativeSetChorusOn(ptr: Long, on: Boolean)
-    private external fun nativeSetBufferSize(ptr: Long, bufferSize: Int): Boolean
+    private external fun nativeSetBufferSize(ptr: Long, bufferFrames: Int): Boolean
     private external fun nativeSetAudioDevice(ptr: Long, deviceId: Int): Boolean
     private external fun nativeGetPeakLevel(ptr: Long): Float
     private external fun nativeGetAudioStats(ptr: Long, out: IntArray): Int

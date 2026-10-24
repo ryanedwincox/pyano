@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <atomic>
 #include <string>
@@ -73,8 +74,11 @@ public:
     std::mutex presetCacheMutex;
     std::map<int, std::vector<CachedPreset>> presetCache;
     int sampleRate = 48000;
-    int bufferSize = 256;
+    // Output buffer size in frames (the latency knob). 0 = automatic: start at
+    // two bursts and let latencyTuner grow it one burst per underrun.
+    int requestedBufferFrames = 0;
     int audioDeviceId = oboe::kUnspecified;
+    std::unique_ptr<oboe::LatencyTuner> latencyTuner;   // non-null only in automatic mode
 
     // Output level monitoring (peak level per callback)
     std::atomic<float> peakLevel{0.0f};
@@ -114,9 +118,11 @@ public:
     int metronomePendingNoteOff = -1;           // note number awaiting noteoff, -1 = none
     int metronomeNoteOffCountdown = 0;          // frames remaining before noteoff
 
-    bool create(int requestedSampleRate, int requestedBufferSize) {
+    // requestedSampleRate should be the device's native output rate so the stream
+    // opens without resampling; startAudio() corrects it if the device differs.
+    bool create(int requestedSampleRate, int bufferFrames) {
         sampleRate = requestedSampleRate;
-        bufferSize = requestedBufferSize;
+        requestedBufferFrames = bufferFrames;
 
         settings = new_fluid_settings();
         if (!settings) {
@@ -143,27 +149,26 @@ public:
         fluid_synth_set_reverb(synth, 0.2, 0.0, 0.5, 0.9);
         fluid_synth_set_chorus(synth, 3, 2.0, 0.3, 8.0, FLUID_CHORUS_MOD_SINE);
 
-        LOGI("FluidSynth created: sampleRate=%d, bufferSize=%d", sampleRate, bufferSize);
+        LOGI("FluidSynth created: sampleRate=%d, bufferFrames=%d", sampleRate, requestedBufferFrames);
         return true;
     }
 
     bool startAudio() {
         streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
+        latencyTuner.reset(); // holds a reference to the stream being replaced
+        // Sample rate and callback size are deliberately left unset: the device's
+        // native rate and burst-sized callbacks are what keep the stream on the
+        // low-latency (MMAP / fast mixer) path with evenly spaced callbacks.
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
                ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-               ->setSharingMode(oboe::SharingMode::Shared)
+               ->setSharingMode(oboe::SharingMode::Exclusive)  // falls back to Shared
                ->setFormat(oboe::AudioFormat::Float)
                ->setChannelCount(2)
-               ->setFramesPerCallback(bufferSize)
                ->setUsage(oboe::Usage::Media)
                ->setContentType(oboe::ContentType::Music)
                ->setDeviceId(audioDeviceId)
                ->setCallback(this);
-        // Let Oboe pick the optimal sample rate for the device
-        if (audioDeviceId == oboe::kUnspecified) {
-            builder.setSampleRate(sampleRate);
-        }
 
         oboe::Result result = builder.openManagedStream(stream);
         if (result != oboe::Result::OK) {
@@ -171,19 +176,31 @@ public:
             return false;
         }
 
+        // Render at whatever rate the device gave us. Done before start, so no
+        // callback is running; voices are reset by the rate change.
+        int actualRate = stream->getSampleRate();
+        if (actualRate != sampleRate && synth) {
+            LOGI("Adjusting FluidSynth sample rate from %d to %d", sampleRate, actualRate);
+            std::lock_guard<std::mutex> lock(synthMutex);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            // Deprecated because it is unsafe while rendering; the stream is stopped here.
+            fluid_synth_set_sample_rate(synth, (float)actualRate);
+#pragma clang diagnostic pop
+            sampleRate = actualRate;
+            recalcSamplesPerBeat();
+        }
+
+        if (requestedBufferFrames > 0) {
+            stream->setBufferSizeInFrames(requestedBufferFrames);
+        } else {
+            latencyTuner = std::make_unique<oboe::LatencyTuner>(*stream);
+        }
+
         result = stream->requestStart();
         if (result != oboe::Result::OK) {
             LOGE("Failed to start stream: %s", oboe::convertToText(result));
             return false;
-        }
-
-        // Update FluidSynth sample rate to match the actual stream
-        int actualRate = stream->getSampleRate();
-        if (actualRate != sampleRate && synth) {
-            LOGI("Adjusting FluidSynth sample rate from %d to %d", sampleRate, actualRate);
-            sampleRate = actualRate;
-            std::lock_guard<std::mutex> lock(synthMutex);
-            fluid_settings_setnum(settings, "synth.sample-rate", (double)actualRate);
         }
 
         LOGI("Audio stream started: sampleRate=%d, framesPerCallback=%d, deviceId=%d, "
@@ -202,6 +219,7 @@ public:
         if (stream) {
             stream->requestStop();
             stream->close();
+            latencyTuner.reset();
             stream.reset();
         }
     }
@@ -357,8 +375,9 @@ public:
         return count;
     }
 
-    bool setBufferSize(int newBufferSize) {
-        bufferSize = newBufferSize;
+    // frames == 0 selects automatic tuning.
+    bool setBufferSize(int frames) {
+        requestedBufferFrames = frames;
         stopAudio();
         return startAudio();
     }
@@ -622,6 +641,9 @@ public:
             memset(output, 0, numFrames * 2 * sizeof(float));
         }
 
+        // Grows the buffer one burst after an underrun (automatic mode only).
+        if (latencyTuner) latencyTuner->tune();
+
         recordCallbackStats(audioStream, numFrames, callbackStart);
         return oboe::DataCallbackResult::Continue;
     }
@@ -639,9 +661,9 @@ public:
 // C wrapper functions for JNI bridge (called from native-lib.c)
 extern "C" {
 
-void* engine_create(int sampleRate, int bufferSize) {
+void* engine_create(int sampleRate, int bufferFrames) {
     auto* engine = new PyanoEngine();
-    if (!engine->create(sampleRate, bufferSize)) {
+    if (!engine->create(sampleRate, bufferFrames)) {
         delete engine;
         return nullptr;
     }
@@ -716,9 +738,9 @@ void engine_stop_audio(void* ptr) {
     if (engine) engine->stopAudio();
 }
 
-int engine_set_buffer_size(void* ptr, int bufferSize) {
+int engine_set_buffer_size(void* ptr, int bufferFrames) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
-    return engine && engine->setBufferSize(bufferSize) ? 1 : 0;
+    return engine && engine->setBufferSize(bufferFrames) ? 1 : 0;
 }
 
 int engine_get_presets(void* ptr, int sfId, int* banks, int* programs, const char** names, int maxPresets) {
