@@ -126,6 +126,8 @@ public:
     std::atomic<int> metronomeSubbeatNote{33};  // Metronome Click
     std::atomic<float> metronomeVolume{1.0f};
     int metronomeDrumSfId = -1;                 // sfId of dedicated drum SF2
+    std::string metronomeDrumPath;              // its file, so the same SF2 isn't loaded twice
+    int userSfId = -1;                          // instrument SoundFont; the previous one is unloaded
     int metronomeSampleCounter = 0;
     int metronomePendingNoteOff = -1;           // note number awaiting noteoff, -1 = none
     int metronomeNoteOffCountdown = 0;          // frames remaining before noteoff
@@ -285,15 +287,31 @@ public:
         }
     }
 
+    // Only one instrument SoundFont stays resident: loading a new one unloads the
+    // previous one (each can be 100+ MB, all samples in RAM). The metronome's drum
+    // SF2 is never unloaded and is reused if the user picks the same file.
     int loadSoundFont(const char* path) {
         std::lock_guard<std::mutex> lock(synthMutex);
         if (!synth) return -1;
-        // reset=0: do not disturb channel 9's drum-kit program selection
-        int sfId = fluid_synth_sfload(synth, path, 0);
-        if (sfId == FLUID_FAILED) {
-            LOGE("Failed to load soundfont: %s", path);
-            return -1;
+        int sfId;
+        if (metronomeDrumSfId >= 0 && metronomeDrumPath == path) {
+            sfId = metronomeDrumSfId;
+        } else {
+            // reset=0: do not disturb channel 9's drum-kit program selection
+            sfId = fluid_synth_sfload(synth, path, 0);
+            if (sfId == FLUID_FAILED) {
+                LOGE("Failed to load soundfont: %s", path);
+                return -1;
+            }
         }
+        if (userSfId >= 0 && userSfId != sfId && userSfId != metronomeDrumSfId) {
+            // reset=1 re-resolves every channel's preset against the remaining fonts
+            // so no channel keeps pointing into the one being removed. FluidSynth
+            // defers freeing it until voices still sounding from it have ended.
+            fluid_synth_sfunload(synth, userSfId, 1);
+            LOGI("Unloaded previous soundfont id=%d", userSfId);
+        }
+        userSfId = sfId;
         // Re-assert channel 9 routing to the drum soundfont in case this
         // new SF2 contains bank 128 presets that FluidSynth would otherwise
         // pick up for the drum channel.
@@ -301,7 +319,7 @@ public:
             fluid_synth_program_select(synth, kMetronomeChannel, metronomeDrumSfId,
                                        kMetronomeDrumBank, kMetronomeDrumPreset);
         }
-        cachePresetsLocked(sfId);
+        if (sfId != metronomeDrumSfId) cachePresetsLocked(sfId);  // drum kit's is cached at load
         LOGI("Loaded soundfont: %s (id=%d)", path, sfId);
         return sfId;
     }
@@ -401,7 +419,8 @@ public:
 
     // Returns preset count and fills arrays with bank, program, name for each.
     // Name pointers stay valid until destroy(): cache entries are never replaced
-    // because FluidSynth never reuses an sfId.
+    // because FluidSynth never reuses an sfId, and are kept after the SoundFont is
+    // unloaded (names only, a few KB) so a concurrent load can't free them mid-read.
     int getPresets(int sfId, int* banks, int* programs, const char** names, int maxPresets) {
         std::lock_guard<std::mutex> lock(presetCacheMutex);
         auto it = presetCache.find(sfId);
@@ -530,6 +549,7 @@ public:
             return -1;
         }
         metronomeDrumSfId = sfId;
+        metronomeDrumPath = path;
         cachePresetsLocked(sfId);
         int rc = fluid_synth_program_select(synth, kMetronomeChannel, sfId,
                                             kMetronomeDrumBank, kMetronomeDrumPreset);
