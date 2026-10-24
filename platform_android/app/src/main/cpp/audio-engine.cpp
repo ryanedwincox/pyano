@@ -2,6 +2,7 @@
 // NOT concerned with: JNI marshaling (see native-lib.c), UI state, or Kotlin-level logic.
 #include <oboe/Oboe.h>
 #include <android/log.h>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -39,6 +40,17 @@ public:
 
     // Output level monitoring (peak level per callback)
     std::atomic<float> peakLevel{0.0f};
+
+    // Glitch diagnostics, written by the RT callback and polled by the UI thread.
+    // xruns accumulate across stream reopens; max callback time and peak voices
+    // are reset on each read so every poll reports the worst case since the last.
+    std::atomic<int> totalXruns{0};
+    int streamXrunsSeen = 0;                    // RT-only: xruns already counted for this stream
+    std::atomic<int> streamBufferFrames{0};
+    std::atomic<int> streamBurstFrames{0};
+    std::atomic<int> lastCallbackFrames{0};
+    std::atomic<int> maxCallbackMicros{0};
+    std::atomic<int> peakActiveVoices{0};
 
     // Recording ring buffer: allocated once, reused across recordings
     // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
@@ -94,6 +106,7 @@ public:
     }
 
     bool startAudio() {
+        streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
                ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
@@ -131,8 +144,15 @@ public:
             fluid_settings_setnum(settings, "synth.sample-rate", (double)actualRate);
         }
 
-        LOGI("Audio stream started: sampleRate=%d, framesPerCallback=%d, deviceId=%d",
-             stream->getSampleRate(), stream->getFramesPerCallback(), stream->getDeviceId());
+        LOGI("Audio stream started: sampleRate=%d, framesPerCallback=%d, deviceId=%d, "
+             "burst=%d, bufferSize=%d, capacity=%d, sharing=%s, perfMode=%s, api=%s",
+             stream->getSampleRate(), stream->getFramesPerCallback(), stream->getDeviceId(),
+             stream->getFramesPerBurst(), stream->getBufferSizeInFrames(),
+             stream->getBufferCapacityInFrames(),
+             oboe::convertToText(stream->getSharingMode()),
+             oboe::convertToText(stream->getPerformanceMode()),
+             stream->usesAAudio() ? "AAudio" : "OpenSL ES");
+        streamBurstFrames.store(stream->getFramesPerBurst(), std::memory_order_relaxed);
         return true;
     }
 
@@ -261,6 +281,18 @@ public:
 
     float getPeakLevel() {
         return peakLevel.exchange(0.0f);
+    }
+
+    // Fills out[kAudioStatsCount]; see the layout comment on engine_get_audio_stats.
+    static constexpr int kAudioStatsCount = 7;
+    void getAudioStats(int* out) {
+        out[0] = totalXruns.load(std::memory_order_relaxed);
+        out[1] = streamBufferFrames.load(std::memory_order_relaxed);
+        out[2] = streamBurstFrames.load(std::memory_order_relaxed);
+        out[3] = lastCallbackFrames.load(std::memory_order_relaxed);
+        out[4] = maxCallbackMicros.exchange(0, std::memory_order_relaxed);
+        out[5] = peakActiveVoices.exchange(0, std::memory_order_relaxed);
+        out[6] = sampleRate;
     }
 
     // --- Recording control (called from UI/drain thread) ---
@@ -425,9 +457,29 @@ public:
         metronomeCurrentBeat.store(beat, std::memory_order_relaxed);
     }
 
+    // RT-safe: getXRunCount/getBufferSizeInFrames are plain reads on AAudio, and
+    // steady_clock is a vDSO clock_gettime call. Only atomics are written.
+    void recordCallbackStats(oboe::AudioStream* audioStream, int32_t numFrames,
+                             std::chrono::steady_clock::time_point callbackStart) {
+        auto xruns = audioStream->getXRunCount();
+        if (xruns && xruns.value() > streamXrunsSeen) {
+            totalXruns.fetch_add(xruns.value() - streamXrunsSeen, std::memory_order_relaxed);
+            streamXrunsSeen = xruns.value();
+        }
+        streamBufferFrames.store(audioStream->getBufferSizeInFrames(), std::memory_order_relaxed);
+        lastCallbackFrames.store(numFrames, std::memory_order_relaxed);
+
+        int micros = (int)std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - callbackStart).count();
+        if (micros > maxCallbackMicros.load(std::memory_order_relaxed)) {
+            maxCallbackMicros.store(micros, std::memory_order_relaxed);
+        }
+    }
+
     // Oboe audio callback — renders FluidSynth audio into output buffer
     oboe::DataCallbackResult onAudioReady(
             oboe::AudioStream* audioStream, void* audioData, int32_t numFrames) override {
+        auto callbackStart = std::chrono::steady_clock::now();
         auto* output = static_cast<float*>(audioData);
 
         if (synth) {
@@ -458,10 +510,16 @@ public:
             if (peak > prev) {
                 peakLevel.store(peak);
             }
+
+            int voices = fluid_synth_get_active_voice_count(synth);
+            if (voices > peakActiveVoices.load(std::memory_order_relaxed)) {
+                peakActiveVoices.store(voices, std::memory_order_relaxed);
+            }
         } else {
             memset(output, 0, numFrames * 2 * sizeof(float));
         }
 
+        recordCallbackStats(audioStream, numFrames, callbackStart);
         return oboe::DataCallbackResult::Continue;
     }
 
@@ -573,6 +631,16 @@ int engine_set_audio_device(void* ptr, int deviceId) {
 float engine_get_peak_level(void* ptr) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     return engine ? engine->getPeakLevel() : 0.0f;
+}
+
+// Fills out[7]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
+// maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate}.
+// Returns the number of values written.
+int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    if (!engine || maxValues < PyanoEngine::kAudioStatsCount) return 0;
+    engine->getAudioStats(out);
+    return PyanoEngine::kAudioStatsCount;
 }
 
 // --- Metronome C wrappers ---

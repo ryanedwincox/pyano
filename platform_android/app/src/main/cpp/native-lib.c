@@ -34,6 +34,7 @@ int engine_set_buffer_size(void* engine, int bufferSize);
 int engine_get_presets(void* engine, int sfId, int* banks, int* programs, const char** names, int maxPresets);
 int engine_set_audio_device(void* engine, int deviceId);
 float engine_get_peak_level(void* engine);
+int engine_get_audio_stats(void* engine, int* out, int maxValues);
 void engine_start_metronome(void* engine);
 void engine_stop_metronome(void* engine);
 void engine_set_metronome_bpm(void* engine, int bpm);
@@ -155,6 +156,17 @@ Java_com_pyano_audio_FluidSynthEngine_nativeSetAudioDevice(JNIEnv* env, jobject 
 JNIEXPORT jfloat JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeGetPeakLevel(JNIEnv* env, jobject thiz, jlong ptr) {
     return engine_get_peak_level((void*)(intptr_t)ptr);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativeGetAudioStats(JNIEnv* env, jobject thiz,
+                                                          jlong ptr, jintArray out) {
+    int values[16];
+    jsize len = (*env)->GetArrayLength(env, out);
+    if (len > 16) len = 16;
+    int count = engine_get_audio_stats((void*)(intptr_t)ptr, values, len);
+    if (count > 0) (*env)->SetIntArrayRegion(env, out, 0, count, values);
+    return count;
 }
 
 JNIEXPORT jobjectArray JNICALL

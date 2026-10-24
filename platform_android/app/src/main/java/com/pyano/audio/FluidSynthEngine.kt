@@ -9,6 +9,28 @@ import java.io.InputStream
 
 data class SfPreset(val bank: Int, val program: Int, val name: String)
 
+/**
+ * Output-stream health snapshot. [maxCallbackMicros] and [peakVoices] are the worst
+ * values since the previous [FluidSynthEngine.getAudioStats] call.
+ */
+data class AudioStats(
+    val xruns: Int,
+    val bufferFrames: Int,
+    val burstFrames: Int,
+    val callbackFrames: Int,
+    val maxCallbackMicros: Int,
+    val peakVoices: Int,
+    val sampleRate: Int,
+) {
+    val bufferMs: Float get() = if (sampleRate > 0) bufferFrames * 1000f / sampleRate else 0f
+
+    /** Worst callback duration as a fraction of the time one callback's frames last. */
+    val callbackLoad: Float
+        get() = if (sampleRate > 0 && callbackFrames > 0) {
+            maxCallbackMicros / (callbackFrames * 1_000_000f / sampleRate)
+        } else 0f
+}
+
 class FluidSynthEngine {
     private var enginePtr: Long = 0
     var soundFontId: Int = -1
@@ -98,6 +120,13 @@ class FluidSynthEngine {
     fun getPeakLevel(): Float {
         if (enginePtr == 0L) return 0f
         return nativeGetPeakLevel(enginePtr)
+    }
+
+    fun getAudioStats(): AudioStats? {
+        if (enginePtr == 0L) return null
+        val v = IntArray(7)
+        if (nativeGetAudioStats(enginePtr, v) < v.size) return null
+        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6])
     }
 
     // --- Metronome ---
@@ -231,6 +260,7 @@ class FluidSynthEngine {
     private external fun nativeSetBufferSize(ptr: Long, bufferSize: Int): Boolean
     private external fun nativeSetAudioDevice(ptr: Long, deviceId: Int): Boolean
     private external fun nativeGetPeakLevel(ptr: Long): Float
+    private external fun nativeGetAudioStats(ptr: Long, out: IntArray): Int
     private external fun nativeGetPresets(ptr: Long, sfId: Int): Array<String>
     private external fun nativeStartMetronome(ptr: Long)
     private external fun nativeStopMetronome(ptr: Long)

@@ -42,6 +42,11 @@ data class AudioOutput(val id: Int, val name: String, val type: Int) {
 class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "Pyano"
+        // Separate tag so glitch diagnostics can be isolated: adb logcat -s PyanoAudio
+        private const val AUDIO_TAG = "PyanoAudio"
+        private const val AUDIO_STATS_INTERVAL_TICKS = 20      // 1 s at the 20 Hz poll rate
+        private const val AUDIO_STATS_HEARTBEAT_TICKS = 200    // 10 s
+        private const val AUDIO_STATS_LOAD_WARN = 0.7f
         private const val DEFAULT_SF = "FluidR3_GM.sf2"
         private const val PREFS_NAME = "pyano_settings"
         // Per-channel effect sends forced after each program change so reverb/chorus
@@ -367,8 +372,14 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
         // Start activity monitor polling
         viewModelScope.launch {
+            var tick = 0
+            var loggedXruns = 0
             while (true) {
                 delay(50) // 20Hz update rate
+                tick++
+                if (tick % AUDIO_STATS_INTERVAL_TICKS == 0) {
+                    loggedXruns = logAudioStats(loggedXruns, tick % AUDIO_STATS_HEARTBEAT_TICKS == 0)
+                }
                 // MIDI input activity: true if event in last 200ms
                 val handler = midiEventHandler
                 _midiInputLevel.value = handler != null &&
@@ -420,6 +431,25 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * Log output-stream health. Logs immediately on new xruns or a callback that used
+     * more than [AUDIO_STATS_LOAD_WARN] of its time budget, otherwise only on [heartbeat].
+     * Returns the xrun total that has now been reported.
+     */
+    private fun logAudioStats(loggedXruns: Int, heartbeat: Boolean): Int {
+        val stats = engine.getAudioStats() ?: return loggedXruns
+        val newXruns = stats.xruns - loggedXruns
+        val load = stats.callbackLoad
+        if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN || heartbeat) {
+            val msg = "xruns=${stats.xruns} (+$newXruns) buffer=${stats.bufferFrames}f " +
+                "(%.1f ms) burst=${stats.burstFrames}f callback=${stats.callbackFrames}f ".format(stats.bufferMs) +
+                "maxCallback=${stats.maxCallbackMicros}us load=%.0f%% ".format(load * 100) +
+                "peakVoices=${stats.peakVoices} rate=${stats.sampleRate}"
+            if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN) Log.w(AUDIO_TAG, msg) else Log.i(AUDIO_TAG, msg)
+        }
+        return stats.xruns
     }
 
     fun refreshAudioOutputs() {
