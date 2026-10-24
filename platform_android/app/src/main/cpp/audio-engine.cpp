@@ -32,6 +32,7 @@ static constexpr int kMetronomeDrumPreset = 0;
 static constexpr int kMetronomeDownbeatVelocity = 120;
 static constexpr int kMetronomeSubbeatVelocity  = 85;
 static constexpr int kMetronomeNoteOffMs = 80;
+static constexpr int kMaxSynthSampleRate = 96000;  // FluidSynth's synth.sample-rate ceiling
 
 // A MIDI or control change handed from a non-RT thread to the audio callback,
 // which applies it to the synth just before rendering. Trivially copyable so it
@@ -65,8 +66,16 @@ public:
     // Event queue: any number of producers serialized by producerMutex, one
     // consumer (the RT callback) that never takes a lock.
     static constexpr size_t kEventQueueCapacity = 1024;
+    // Slots only NoteOff/ProgramSelect/ReverbOn may use, so a backlog of notes or
+    // pedal CCs (e.g. while a SoundFont loads) can't crowd out a NoteOff.
+    static constexpr size_t kReservedEventSlots = 256;
     SpscRingBuffer<SynthEvent> eventQueue{kEventQueueCapacity};
     std::mutex producerMutex;
+    // Set when a NoteOff had to be dropped anyway; the callback silences all notes.
+    std::atomic<bool> allNotesOffPending{false};
+    // Set when the queue may hold stale events (stream was down, or the synth was
+    // busy loading); the next drain skips NoteOns so they don't all fire late at once.
+    std::atomic<bool> discardQueuedNoteOns{false};
 
     // Preset lists captured at load time so the UI never has to walk a
     // SoundFont while the audio thread owns the synth. Keyed by sfId.
@@ -78,6 +87,10 @@ public:
     int requestedBufferFrames = 0;
     int audioDeviceId = oboe::kUnspecified;
     std::unique_ptr<oboe::LatencyTuner> latencyTuner;   // non-null only in automatic mode
+    // Serializes stream open/close between the UI thread (device/buffer changes) and
+    // Oboe's error thread (restart after disconnect). Never taken on the RT thread.
+    std::mutex streamMutex;
+    std::atomic<bool> shuttingDown{false};
 
     // Output level monitoring (peak level per callback)
     std::atomic<float> peakLevel{0.0f};
@@ -157,8 +170,20 @@ public:
     }
 
     bool startAudio() {
+        std::lock_guard<std::mutex> lock(streamMutex);
+        return startAudioLocked();
+    }
+
+    void stopAudio() {
+        std::lock_guard<std::mutex> lock(streamMutex);
+        stopAudioLocked();
+    }
+
+    // Caller holds streamMutex.
+    bool startAudioLocked() {
+        stopAudioLocked();    // never replace the tuner/stream under a running callback
         streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
-        latencyTuner.reset(); // holds a reference to the stream being replaced
+        discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         // Sample rate and callback size are deliberately left unset: the device's
         // native rate and burst-sized callbacks are what keep the stream on the
         // low-latency (MMAP / fast mixer) path with evenly spaced callbacks.
@@ -177,6 +202,21 @@ public:
         if (result != oboe::Result::OK) {
             LOGE("Failed to open stream: %s", oboe::convertToText(result));
             return false;
+        }
+
+        // FluidSynth can't render above 96 kHz (it clamps, which would play sharp).
+        // For such devices let Oboe resample from 48 kHz instead.
+        if (stream->getSampleRate() > kMaxSynthSampleRate) {
+            LOGI("Device rate %d exceeds synth max; reopening at 48000 with resampling",
+                 stream->getSampleRate());
+            stream->close();
+            builder.setSampleRate(48000)
+                   ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium);
+            result = builder.openManagedStream(stream);
+            if (result != oboe::Result::OK) {
+                LOGE("Failed to reopen stream at 48000: %s", oboe::convertToText(result));
+                return false;
+            }
         }
 
         // Render at whatever rate the device gave us. Done before start, so no
@@ -218,7 +258,8 @@ public:
         return true;
     }
 
-    void stopAudio() {
+    // Caller holds streamMutex.
+    void stopAudioLocked() {
         if (stream) {
             stream->requestStop();
             stream->close();
@@ -228,6 +269,7 @@ public:
     }
 
     void destroy() {
+        shuttingDown.store(true);
         recordingActive.store(false, std::memory_order_relaxed);
         stopAudio();
         delete recordingBuffer;
@@ -282,9 +324,15 @@ public:
 
     // Called from any non-RT thread. Never blocks on the audio thread.
     void pushEvent(const SynthEvent& ev) {
+        bool essential = ev.type == SynthEvent::NoteOff || ev.type == SynthEvent::ProgramSelect ||
+                         ev.type == SynthEvent::ReverbOn;
         std::lock_guard<std::mutex> lock(producerMutex);
-        if (eventQueue.write(&ev, 1) == 0) {
+        bool roomForIt = essential || eventQueue.availableWrite() > kReservedEventSlots;
+        if (!roomForIt || eventQueue.write(&ev, 1) == 0) {
             droppedEvents.fetch_add(1, std::memory_order_relaxed);
+            if (ev.type == SynthEvent::NoteOff) {
+                allNotesOffPending.store(true, std::memory_order_release);
+            }
         }
     }
 
@@ -318,11 +366,12 @@ public:
 
     // RT thread only, with synthMutex held.
     void drainEvents() {
+        bool skipNoteOns = discardQueuedNoteOns.exchange(false, std::memory_order_relaxed);
         SynthEvent ev;
         while (eventQueue.read(&ev, 1) == 1) {
             switch (ev.type) {
                 case SynthEvent::NoteOn:
-                    fluid_synth_noteon(synth, ev.i[0], ev.i[1], ev.i[2]);
+                    if (!skipNoteOns) fluid_synth_noteon(synth, ev.i[0], ev.i[1], ev.i[2]);
                     break;
                 case SynthEvent::NoteOff:
                     fluid_synth_noteoff(synth, ev.i[0], ev.i[1]);
@@ -344,6 +393,9 @@ public:
                     fluid_synth_reverb_on(synth, -1, ev.i[0]);
                     break;
             }
+        }
+        if (allNotesOffPending.exchange(false, std::memory_order_acquire)) {
+            fluid_synth_all_notes_off(synth, -1);
         }
     }
 
@@ -367,16 +419,16 @@ public:
 
     // frames == 0 selects automatic tuning.
     bool setBufferSize(int frames) {
+        std::lock_guard<std::mutex> lock(streamMutex);
         requestedBufferFrames = frames;
-        stopAudio();
-        return startAudio();
+        return startAudioLocked();
     }
 
     bool setAudioDevice(int deviceId) {
+        std::lock_guard<std::mutex> lock(streamMutex);
         audioDeviceId = deviceId;
         LOGI("Setting audio device ID: %d", deviceId);
-        stopAudio();
-        return startAudio();
+        return startAudioLocked();
     }
 
     float getPeakLevel() {
@@ -560,8 +612,9 @@ public:
         metronomeCurrentBeat.store(beat, std::memory_order_relaxed);
     }
 
-    // RT-safe: getXRunCount/getBufferSizeInFrames are plain reads on AAudio, and
-    // steady_clock is a vDSO clock_gettime call. Only atomics are written.
+    // getXRunCount/getBufferSizeInFrames take a shared lock inside Oboe that is only
+    // contended by close(), so they don't block during playback. steady_clock is a
+    // vDSO clock_gettime call. Only atomics are written.
     void recordCallbackStats(oboe::AudioStream* audioStream, int32_t numFrames,
                              std::chrono::steady_clock::time_point callbackStart) {
         auto xruns = audioStream->getXRunCount();
@@ -590,6 +643,7 @@ public:
         std::unique_lock<std::mutex> lock(synthMutex, std::try_to_lock);
         if (synth && !lock.owns_lock()) {
             lockedOutCallbacks.fetch_add(1, std::memory_order_relaxed);
+            discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         }
 
         if (synth && lock.owns_lock()) {
@@ -642,9 +696,15 @@ public:
         LOGE("Audio stream error: %s", oboe::convertToText(error));
     }
 
-    void onErrorAfterClose(oboe::AudioStream* stream, oboe::Result error) override {
-        LOGE("Audio stream closed with error: %s, restarting...", oboe::convertToText(error));
-        startAudio();
+    // Runs on Oboe's error thread (e.g. output unplugged). Restart only if this is
+    // still our current stream: the UI thread may have already replaced it.
+    void onErrorAfterClose(oboe::AudioStream* closedStream, oboe::Result error) override {
+        LOGE("Audio stream closed with error: %s", oboe::convertToText(error));
+        if (shuttingDown.load()) return;
+        std::lock_guard<std::mutex> lock(streamMutex);
+        if (shuttingDown.load() || stream.get() != closedStream) return;
+        LOGI("Restarting audio stream");
+        startAudioLocked();
     }
 };
 
