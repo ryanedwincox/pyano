@@ -25,9 +25,7 @@ void engine_note_off(void* engine, int channel, int note);
 void engine_cc(void* engine, int channel, int ctrl, int value);
 void engine_set_gain(void* engine, float gain);
 void engine_set_reverb(void* engine, float roomsize, float damping, float width, float level);
-void engine_set_chorus(void* engine, int nr, float level, float speed, float depth, int type);
 void engine_set_reverb_on(void* engine, int on);
-void engine_set_chorus_on(void* engine, int on);
 int engine_start_audio(void* engine);
 void engine_stop_audio(void* engine);
 int engine_set_buffer_size(void* engine, int bufferSize);
@@ -113,22 +111,9 @@ Java_com_pyano_audio_FluidSynthEngine_nativeSetReverb(JNIEnv* env, jobject thiz,
 }
 
 JNIEXPORT void JNICALL
-Java_com_pyano_audio_FluidSynthEngine_nativeSetChorus(JNIEnv* env, jobject thiz,
-                                                       jlong ptr, jint nr, jfloat level,
-                                                       jfloat speed, jfloat depth, jint type) {
-    engine_set_chorus((void*)(intptr_t)ptr, nr, level, speed, depth, type);
-}
-
-JNIEXPORT void JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeSetReverbOn(JNIEnv* env, jobject thiz,
                                                          jlong ptr, jboolean on) {
     engine_set_reverb_on((void*)(intptr_t)ptr, on ? 1 : 0);
-}
-
-JNIEXPORT void JNICALL
-Java_com_pyano_audio_FluidSynthEngine_nativeSetChorusOn(JNIEnv* env, jobject thiz,
-                                                         jlong ptr, jboolean on) {
-    engine_set_chorus_on((void*)(intptr_t)ptr, on ? 1 : 0);
 }
 
 JNIEXPORT jboolean JNICALL

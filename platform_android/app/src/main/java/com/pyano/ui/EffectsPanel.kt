@@ -1,4 +1,4 @@
-// EffectsPanel: Compose UI for reverb/chorus/gain effect controls plus shared slider/meter widgets.
+// EffectsPanel: Compose UI for reverb/gain/buffer effect controls plus shared slider/meter widgets.
 // NOT concerned with: applying effects to audio, DSP math, or engine state ownership.
 package com.pyano.ui
 
@@ -45,38 +45,6 @@ fun LabeledSlider(
         )
         Text(
             text = String.format(format, value),
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.width(56.dp)
-        )
-    }
-}
-
-@Composable
-fun IntSlider(
-    label: String,
-    value: Int,
-    range: IntRange,
-    onValueChange: (Int) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.width(72.dp)
-        )
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onValueChange(it.roundToInt()) },
-            valueRange = range.first.toFloat()..range.last.toFloat(),
-            steps = range.last - range.first - 1,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = "$value",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.width(56.dp)
         )

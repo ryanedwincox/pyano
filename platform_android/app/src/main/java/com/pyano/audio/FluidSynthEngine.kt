@@ -100,16 +100,9 @@ class FluidSynthEngine {
         if (enginePtr != 0L) nativeSetReverb(enginePtr, roomsize, damping, width, level)
     }
 
-    fun setChorus(nr: Int, level: Float, speed: Float, depth: Float, type: Int) {
-        if (enginePtr != 0L) nativeSetChorus(enginePtr, nr, level, speed, depth, type)
-    }
-
+    /** Off disables reverb processing entirely, not just its level. */
     fun setReverbOn(on: Boolean) {
         if (enginePtr != 0L) nativeSetReverbOn(enginePtr, on)
-    }
-
-    fun setChorusOn(on: Boolean) {
-        if (enginePtr != 0L) nativeSetChorusOn(enginePtr, on)
     }
 
     /** Output buffer size in frames; 0 = automatic tuning. Restarts the stream. */
@@ -260,9 +253,7 @@ class FluidSynthEngine {
     private external fun nativeCC(ptr: Long, channel: Int, ctrl: Int, value: Int)
     private external fun nativeSetGain(ptr: Long, gain: Float)
     private external fun nativeSetReverb(ptr: Long, roomsize: Float, damping: Float, width: Float, level: Float)
-    private external fun nativeSetChorus(ptr: Long, nr: Int, level: Float, speed: Float, depth: Float, type: Int)
     private external fun nativeSetReverbOn(ptr: Long, on: Boolean)
-    private external fun nativeSetChorusOn(ptr: Long, on: Boolean)
     private external fun nativeSetBufferSize(ptr: Long, bufferFrames: Int): Boolean
     private external fun nativeSetAudioDevice(ptr: Long, deviceId: Int): Boolean
     private external fun nativeGetPeakLevel(ptr: Long): Float

@@ -31,14 +31,6 @@ fun SynthTab(viewModel: PyanoViewModel) {
     val reverbWidth by viewModel.reverbWidth.collectAsState()
     val reverbLevel by viewModel.reverbLevel.collectAsState()
 
-    // Chorus state
-    val chorusOn by viewModel.chorusOn.collectAsState()
-    val chorusVoices by viewModel.chorusVoices.collectAsState()
-    val chorusLevel by viewModel.chorusLevel.collectAsState()
-    val chorusSpeed by viewModel.chorusSpeed.collectAsState()
-    val chorusDepth by viewModel.chorusDepth.collectAsState()
-    val chorusType by viewModel.chorusType.collectAsState()
-
     // Audio output
     val audioOutputs by viewModel.audioOutputs.collectAsState()
     val selectedAudioOutput by viewModel.selectedAudioOutput.collectAsState()
@@ -238,40 +230,6 @@ fun SynthTab(viewModel: PyanoViewModel) {
                         LabeledSlider("Damp", reverbDamp, 0f..1f, "%.2f", { viewModel.setReverbDamp(it) })
                         LabeledSlider("Width", reverbWidth, 0f..100f, "%.1f", { viewModel.setReverbWidth(it) })
                         LabeledSlider("Level", reverbLevel, 0f..1f, "%.2f", { viewModel.setReverbLevel(it) })
-                    }
-                }
-            }
-
-            // Chorus
-            Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
-                Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                    SectionHeader("Chorus", chorusOn) { viewModel.setChorusOn(it) }
-                    if (chorusOn) {
-                        IntSlider("Voices", chorusVoices, 0..99, { viewModel.setChorusVoices(it) })
-                        LabeledSlider("Level", chorusLevel, 0f..10f, "%.1f", { viewModel.setChorusLevel(it) })
-                        LabeledSlider("Speed", chorusSpeed, 0.29f..5f, "%.2f Hz", { viewModel.setChorusSpeed(it) })
-                        LabeledSlider("Depth", chorusDepth, 0f..21f, "%.1f ms", { viewModel.setChorusDepth(it) })
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Type",
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.width(72.dp)
-                            )
-                            FilterChip(
-                                selected = chorusType == 0,
-                                onClick = { viewModel.setChorusType(0) },
-                                label = { Text("Sine") },
-                                modifier = Modifier.padding(end = 8.dp)
-                            )
-                            FilterChip(
-                                selected = chorusType == 1,
-                                onClick = { viewModel.setChorusType(1) },
-                                label = { Text("Triangle") }
-                            )
-                        }
                     }
                 }
             }

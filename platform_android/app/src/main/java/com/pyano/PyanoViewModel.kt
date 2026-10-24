@@ -50,10 +50,12 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         private const val AUDIO_STATS_LOAD_WARN = 0.7f
         private const val DEFAULT_SF = "FluidR3_GM.sf2"
         private const val PREFS_NAME = "pyano_settings"
-        // Per-channel effect sends forced after each program change so reverb/chorus
+        // Per-channel reverb send forced after each program change so reverb
         // behaves consistently across instruments (see applyChannelSendDefaults).
         private const val REVERB_SEND_DEFAULT = 96
-        private const val CHORUS_SEND_DEFAULT = 64
+        private const val CC_REVERB_SEND = 91
+        private const val CC_CHORUS_SEND = 93
+        private const val METRONOME_CHANNEL = 9
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
@@ -115,7 +117,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val audioStats = _audioStats.asStateFlow()
 
     // Reverb
-    private val _reverbOn = MutableStateFlow(prefs.getBoolean("reverbOn", true))
+    private val _reverbOn = MutableStateFlow(prefs.getBoolean("reverbOn", false))
     val reverbOn = _reverbOn.asStateFlow()
     private val _reverbRoom = MutableStateFlow(prefs.getFloat("reverbRoom", 0.2f))
     val reverbRoom = _reverbRoom.asStateFlow()
@@ -125,20 +127,6 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val reverbWidth = _reverbWidth.asStateFlow()
     private val _reverbLevel = MutableStateFlow(prefs.getFloat("reverbLevel", 0.9f))
     val reverbLevel = _reverbLevel.asStateFlow()
-
-    // Chorus
-    private val _chorusOn = MutableStateFlow(prefs.getBoolean("chorusOn", true))
-    val chorusOn = _chorusOn.asStateFlow()
-    private val _chorusVoices = MutableStateFlow(prefs.getInt("chorusVoices", 3))
-    val chorusVoices = _chorusVoices.asStateFlow()
-    private val _chorusLevel = MutableStateFlow(prefs.getFloat("chorusLevel", 2.0f))
-    val chorusLevel = _chorusLevel.asStateFlow()
-    private val _chorusSpeed = MutableStateFlow(prefs.getFloat("chorusSpeed", 0.3f))
-    val chorusSpeed = _chorusSpeed.asStateFlow()
-    private val _chorusDepth = MutableStateFlow(prefs.getFloat("chorusDepth", 8.0f))
-    val chorusDepth = _chorusDepth.asStateFlow()
-    private val _chorusType = MutableStateFlow(prefs.getInt("chorusType", 0))
-    val chorusType = _chorusType.asStateFlow()
 
     // Metronome
     private val _metronomeBpm = MutableStateFlow(prefs.getInt("metronomeBpm", 120))
@@ -278,16 +266,8 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
         // Apply saved settings
         engine.setGain(_gain.value)
-        if (_reverbOn.value) {
-            engine.setReverb(_reverbRoom.value, _reverbDamp.value, _reverbWidth.value, _reverbLevel.value)
-        } else {
-            engine.setReverbOn(false)
-        }
-        if (_chorusOn.value) {
-            engine.setChorus(_chorusVoices.value, _chorusLevel.value, _chorusSpeed.value, _chorusDepth.value, _chorusType.value)
-        } else {
-            engine.setChorusOn(false)
-        }
+        applyReverb()
+        setReverbOn(_reverbOn.value)
 
         // Load saved soundfont or fallback to bundled
         val context = getApplication<Application>()
@@ -634,15 +614,15 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Force a consistent reverb/chorus send level on a channel after a program change.
+     * Force a consistent effect send level on a channel after a program change.
      * SF2 presets reset CC91/CC93 to the preset's default modulators on program_select,
      * which is often 0 for non-piano instruments — making the global reverb inaudible
      * even though the reverb engine is on. Override here so reverb behaves the same
-     * across every instrument.
+     * across every instrument. Chorus is never used, so its send is always zero.
      */
     private fun applyChannelSendDefaults(channel: Int) {
-        engine.cc(channel, 91, REVERB_SEND_DEFAULT)
-        engine.cc(channel, 93, CHORUS_SEND_DEFAULT)
+        engine.cc(channel, CC_REVERB_SEND, if (_reverbOn.value) REVERB_SEND_DEFAULT else 0)
+        engine.cc(channel, CC_CHORUS_SEND, 0)
     }
 
     fun setSelectedTab(index: Int) {
@@ -664,10 +644,19 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         engine.setBufferSize(value)
     }
 
+    /**
+     * Off stops the reverb unit processing entirely (so it costs no CPU) and zeroes
+     * every channel's CC91 send. On restores CC91 on all melodic channels (the
+     * metronome channel stays dry).
+     */
     fun setReverbOn(on: Boolean) {
         _reverbOn.value = on
         save("reverbOn", on)
         engine.setReverbOn(on)
+        for (channel in 0 until 16) {
+            val send = if (on && channel != METRONOME_CHANNEL) REVERB_SEND_DEFAULT else 0
+            engine.cc(channel, CC_REVERB_SEND, send)
+        }
     }
 
     fun setReverbRoom(value: Float) {
@@ -696,46 +685,6 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun applyReverb() {
         engine.setReverb(_reverbRoom.value, _reverbDamp.value, _reverbWidth.value, _reverbLevel.value)
-    }
-
-    fun setChorusOn(on: Boolean) {
-        _chorusOn.value = on
-        save("chorusOn", on)
-        engine.setChorusOn(on)
-    }
-
-    fun setChorusVoices(value: Int) {
-        _chorusVoices.value = value
-        save("chorusVoices", value)
-        applyChorus()
-    }
-
-    fun setChorusLevel(value: Float) {
-        _chorusLevel.value = value
-        save("chorusLevel", value)
-        applyChorus()
-    }
-
-    fun setChorusSpeed(value: Float) {
-        _chorusSpeed.value = value
-        save("chorusSpeed", value)
-        applyChorus()
-    }
-
-    fun setChorusDepth(value: Float) {
-        _chorusDepth.value = value
-        save("chorusDepth", value)
-        applyChorus()
-    }
-
-    fun setChorusType(value: Int) {
-        _chorusType.value = value
-        save("chorusType", value)
-        applyChorus()
-    }
-
-    private fun applyChorus() {
-        engine.setChorus(_chorusVoices.value, _chorusLevel.value, _chorusSpeed.value, _chorusDepth.value, _chorusType.value)
     }
 
     // --- Metronome ---

@@ -37,8 +37,7 @@ static constexpr int kMetronomeNoteOffMs = 80;
 // which applies it to the synth just before rendering. Trivially copyable so it
 // can travel through SpscRingBuffer.
 struct SynthEvent {
-    enum Type : uint8_t { NoteOn, NoteOff, CC, ProgramSelect, Gain, Reverb, ReverbOn,
-                          Chorus, ChorusOn };
+    enum Type : uint8_t { NoteOn, NoteOff, CC, ProgramSelect, Gain, Reverb, ReverbOn };
     Type type;
     int32_t i[4];
     float f[4];
@@ -132,7 +131,11 @@ public:
 
         fluid_settings_setnum(settings, "synth.sample-rate", (double)sampleRate);
         fluid_settings_setint(settings, "synth.audio-channels", 1); // 1 stereo pair
-        fluid_settings_setint(settings, "synth.polyphony", 512);
+        // Caps worst-case render cost (sustain pedal + stereo samples stack voices
+        // fast); FluidSynth steals the quietest releasing voices beyond this.
+        fluid_settings_setint(settings, "synth.polyphony", 256);
+        // Chorus is not offered; keeping it inactive skips its processing entirely.
+        fluid_settings_setint(settings, "synth.chorus.active", 0);
         // Only the audio callback (or a holder of synthMutex) calls into the synth,
         // so FluidSynth's own API mutex would only add contention with the RT thread.
         fluid_settings_setint(settings, "synth.threadsafe-api", 0);
@@ -145,9 +148,9 @@ public:
             return false;
         }
 
-        // Enable reverb and chorus with defaults
+        // Reverb starts disabled (no processing); the app enables it if the user has.
         fluid_synth_set_reverb(synth, 0.2, 0.0, 0.5, 0.9);
-        fluid_synth_set_chorus(synth, 3, 2.0, 0.3, 8.0, FLUID_CHORUS_MOD_SINE);
+        fluid_synth_reverb_on(synth, -1, 0);
 
         LOGI("FluidSynth created: sampleRate=%d, bufferFrames=%d", sampleRate, requestedBufferFrames);
         return true;
@@ -309,16 +312,8 @@ public:
         pushEvent({SynthEvent::Reverb, {}, {roomsize, damping, width, level}});
     }
 
-    void setChorus(int nr, float level, float speed, float depth, int type) {
-        pushEvent({SynthEvent::Chorus, {nr, type, 0, 0}, {level, speed, depth, 0}});
-    }
-
     void setReverbOn(bool on) {
         pushEvent({SynthEvent::ReverbOn, {on ? 1 : 0, 0, 0, 0}, {}});
-    }
-
-    void setChorusOn(bool on) {
-        pushEvent({SynthEvent::ChorusOn, {on ? 1 : 0, 0, 0, 0}, {}});
     }
 
     // RT thread only, with synthMutex held.
@@ -345,13 +340,8 @@ public:
                     fluid_synth_set_reverb(synth, ev.f[0], ev.f[1], ev.f[2], ev.f[3]);
                     break;
                 case SynthEvent::ReverbOn:
-                    fluid_synth_set_reverb_on(synth, ev.i[0]);
-                    break;
-                case SynthEvent::Chorus:
-                    fluid_synth_set_chorus(synth, ev.i[0], ev.f[0], ev.f[1], ev.f[2], ev.i[1]);
-                    break;
-                case SynthEvent::ChorusOn:
-                    fluid_synth_set_chorus_on(synth, ev.i[0]);
+                    // Off disables the reverb unit's processing, not just its level.
+                    fluid_synth_reverb_on(synth, -1, ev.i[0]);
                     break;
             }
         }
@@ -713,19 +703,9 @@ void engine_set_reverb(void* ptr, float roomsize, float damping, float width, fl
     if (engine) engine->setReverb(roomsize, damping, width, level);
 }
 
-void engine_set_chorus(void* ptr, int nr, float level, float speed, float depth, int type) {
-    auto* engine = static_cast<PyanoEngine*>(ptr);
-    if (engine) engine->setChorus(nr, level, speed, depth, type);
-}
-
 void engine_set_reverb_on(void* ptr, int on) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     if (engine) engine->setReverbOn(on != 0);
-}
-
-void engine_set_chorus_on(void* ptr, int on) {
-    auto* engine = static_cast<PyanoEngine*>(ptr);
-    if (engine) engine->setChorusOn(on != 0);
 }
 
 int engine_start_audio(void* ptr) {
