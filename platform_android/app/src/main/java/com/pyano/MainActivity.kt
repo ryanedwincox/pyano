@@ -3,6 +3,8 @@
 package com.pyano
 
 import android.Manifest
+import android.app.ActivityManager
+import android.app.KeyguardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -10,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,7 +61,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             PyanoTheme {
-                PyanoApp(viewModel = viewModel)
+                PyanoApp(viewModel = viewModel, onOpenApps = otherLauncher()?.let { { openApps(it) } })
             }
         }
     }
@@ -70,6 +73,34 @@ class MainActivity : ComponentActivity() {
             PyanoAudioService.stop(this)
         }
         super.onDestroy()
+    }
+
+    /** The regular launcher (e.g. One UI Home), for when Pyano is the home app. */
+    private fun otherLauncher(): Intent? {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val launcher = packageManager.queryIntentActivities(home, 0).firstOrNull {
+            // Settings' FallbackHome only covers the time before the first unlock.
+            it.activityInfo.packageName != packageName && it.activityInfo.packageName != "com.android.settings"
+        } ?: return null
+        return Intent(home)
+            .setClassName(launcher.activityInfo.packageName, launcher.activityInfo.name)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    /** Opens the regular launcher, asking for the PIN first if Pyano is shown over the lock screen. */
+    private fun openApps(launcher: Intent) {
+        if (getSystemService(ActivityManager::class.java).lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE) {
+            Toast.makeText(this, "Pyano is pinned: swipe up and hold to unpin first", Toast.LENGTH_LONG).show()
+            return
+        }
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (keyguard.isKeyguardLocked) {
+            keyguard.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() = startActivity(launcher)
+            })
+        } else {
+            startActivity(launcher)
+        }
     }
 
     private fun requestNotificationPermissionIfNeeded() {

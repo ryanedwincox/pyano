@@ -20,7 +20,7 @@ private enum class AppTab(val title: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PyanoApp(viewModel: PyanoViewModel) {
+fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
     val selectedTab by viewModel.selectedTab.collectAsState()
 
     Scaffold(
@@ -29,6 +29,10 @@ fun PyanoApp(viewModel: PyanoViewModel) {
                 TopAppBar(
                     title = { Text("Pyano") },
                     actions = {
+                        // Pyano can be the home app; this reaches the regular launcher.
+                        if (onOpenApps != null) {
+                            TextButton(onClick = onOpenApps) { Text("Apps") }
+                        }
                         Image(
                             painter = painterResource(id = com.pyano.R.drawable.ic_pyano_logo),
                             contentDescription = "Pyano logo",

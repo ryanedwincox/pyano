@@ -14,6 +14,14 @@
     <!-- App op (granted via adb or Settings > Special access): wake the screen on a key press. -->
     <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
 
+    <!-- To find the regular launcher for the "Apps" button when Pyano is the home app. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -25,10 +33,18 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Selectable as the home app (kiosk): starts after boot and on Home.
+                 singleTask so Home reuses the running instance instead of a second engine. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
