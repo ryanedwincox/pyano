@@ -21,6 +21,7 @@ import com.pyano.audio.MidiEventType
 import com.pyano.audio.TimestampedMidiEvent
 import com.pyano.audio.SF2Info
 import com.pyano.audio.SF2MetadataReader
+import com.pyano.audio.Sf2Subset
 import com.pyano.audio.SfPreset
 import com.pyano.midi.MidiDeviceManager
 import com.pyano.midi.MidiEventHandler
@@ -253,9 +254,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         // Load the dedicated metronome drum kit (FluidR3_GM.sf2 bank 128 preset 0)
         // BEFORE any piano soundfont so channel 9 routing is stable. Bundled in
         // assets; idempotent copy.
-        val drumPath = engine.copySoundFontFromAssets(getApplication(), DEFAULT_SF)
-        if (drumPath != null) {
-            engine.loadMetronomeDrumKit(drumPath)
+        val gmPath = engine.copySoundFontFromAssets(getApplication(), DEFAULT_SF)
+        if (gmPath != null) {
+            val kitPath = metronomeKitPath(java.io.File(gmPath))
+            if (kitPath == null || engine.loadMetronomeDrumKit(kitPath) < 0) {
+                Log.w(TAG, "Metronome kit unavailable; loading the full GM SoundFont for it")
+                engine.loadMetronomeDrumKit(gmPath)
+            }
         } else {
             Log.e(TAG, "Failed to stage metronome drum soundfont")
         }
@@ -435,10 +440,33 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 "maxCallback=${stats.maxCallbackMicros}us load=%.0f%% cpu=${stats.maxCallbackCpu} ".format(load * 100) +
                 "slowCallbacks=${stats.slowCallbacks} " +
                 "peakVoices=${stats.peakVoices} rate=${stats.sampleRate} " +
-                "droppedEvents=${stats.droppedEvents} lockedOut=${stats.lockedOutCallbacks}"
+                "droppedEvents=${stats.droppedEvents} lockedOut=${stats.lockedOutCallbacks} " +
+                "pagesRestored=${stats.heapPagesRestored} latencyResets=${stats.latencyResets}"
             if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN) Log.w(AUDIO_TAG, msg) else Log.i(AUDIO_TAG, msg)
         }
         return stats.xruns
+    }
+
+    /**
+     * A SoundFont holding just the GM kit's metronome sounds, cut from [gm] on first use.
+     * Loading the whole GM file for a few clicks keeps ~150 MB of samples in RAM, which
+     * Android swaps out while idle and the audio thread then stalls reading back.
+     * The file name carries the extractor version and the notes, so a fixed extractor or a
+     * changed sound list regenerates it.
+     */
+    private fun metronomeKitPath(gm: java.io.File): String? {
+        val keys = metronomeSounds.flatMap { listOf(it.downbeatNote, it.subbeatNote) }.toSortedSet()
+        val kit = java.io.File(gm.parentFile, "metronome-kit-v1-${keys.joinToString("-")}.sf2")
+        if (kit.exists() && kit.lastModified() >= gm.lastModified()) return kit.absolutePath
+        return try {
+            if (Sf2Subset.extract(gm, kit, bank = 128, program = 0, keys = keys, name = "Pyano Metronome Kit")) {
+                Log.i(TAG, "Metronome kit written: ${kit.name} (${kit.length()} bytes)")
+                kit.absolutePath
+            } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "Metronome kit extraction failed", e)
+            null
+        }
     }
 
     /** The default output's native rate, so the stream opens without resampling. */

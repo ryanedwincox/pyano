@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "heap-warmer.h"
 #include "ring-buffer.h"
 
 extern "C" {
@@ -34,6 +35,11 @@ static constexpr int kMetronomeDownbeatVelocity = 120;
 static constexpr int kMetronomeSubbeatVelocity  = 85;
 static constexpr int kMetronomeNoteOffMs = 80;
 static constexpr int kMaxSynthSampleRate = 96000;  // FluidSynth's synth.sample-rate ceiling
+// Silence this long lets automatic buffer sizing drop back to its minimum, so one
+// stall doesn't keep the added latency for the rest of the session. Long enough
+// that a device which really needs the bigger buffer only re-learns it (one
+// underrun per burst of growth) after a real break, not between phrases.
+static constexpr int kIdleSecondsBeforeLatencyReset = 30;
 
 // A MIDI or control change handed from a non-RT thread to the audio callback,
 // which applies it to the synth just before rendering. Trivially copyable so it
@@ -110,6 +116,10 @@ public:
     std::atomic<int> lockedOutCallbacks{0};     // callback output silence: synth busy (load)
     std::atomic<int> maxCallbackCpu{-1};        // core that ran the slowest callback (big vs little)
     std::atomic<int> slowCallbacks{0};          // callbacks that used over 80% of their time
+    std::atomic<int> latencyResets{0};          // automatic buffer dropped back to minimum
+    int idleFrames = 0;                         // RT-only: silent frames so far; -1 once reset this pause
+
+    HeapWarmer heapWarmer;                      // keeps swapped-out samples off the RT path
 
     // Recording ring buffer: allocated once, reused across recordings
     // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
@@ -170,6 +180,8 @@ public:
         fluid_synth_set_reverb(synth, 0.2, 0.0, 0.5, 0.9);
         fluid_synth_reverb_on(synth, -1, 0);
 
+        heapWarmer.start();
+
         LOGI("FluidSynth created: sampleRate=%d, bufferFrames=%d", sampleRate, requestedBufferFrames);
         return true;
     }
@@ -188,6 +200,7 @@ public:
     bool startAudioLocked() {
         stopAudioLocked();    // never replace the tuner/stream under a running callback
         streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
+        idleFrames = 0;
         discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         // Sample rate and callback size are deliberately left unset: the device's
         // native rate and burst-sized callbacks are what keep the stream on the
@@ -281,6 +294,7 @@ public:
         shuttingDown.store(true);
         recordingActive.store(false, std::memory_order_relaxed);
         stopAudio();
+        heapWarmer.stop();
         delete recordingBuffer;
         recordingBuffer = nullptr;
         std::lock_guard<std::mutex> lock(synthMutex);
@@ -462,7 +476,7 @@ public:
     }
 
     // Fills out[kAudioStatsCount]; see the layout comment on engine_get_audio_stats.
-    static constexpr int kAudioStatsCount = 11;
+    static constexpr int kAudioStatsCount = 13;
     void getAudioStats(int* out) {
         out[0] = totalXruns.load(std::memory_order_relaxed);
         out[1] = streamBufferFrames.load(std::memory_order_relaxed);
@@ -475,6 +489,8 @@ public:
         out[8] = lockedOutCallbacks.load(std::memory_order_relaxed);
         out[9] = maxCallbackCpu.load(std::memory_order_relaxed);
         out[10] = slowCallbacks.load(std::memory_order_relaxed);
+        out[11] = heapWarmer.pagesRestored();
+        out[12] = latencyResets.load(std::memory_order_relaxed);
     }
 
     // --- Recording control (called from UI/drain thread) ---
@@ -666,6 +682,24 @@ public:
         }
     }
 
+    // After kIdleSecondsBeforeLatencyReset of silence, asks the tuner to drop the
+    // buffer back to its minimum; it grows again only if underruns recur. Once per
+    // pause: the next sounding voice re-arms it. RT thread only.
+    void relaxLatencyWhenIdle(oboe::AudioStream* audioStream, int32_t numFrames, int voices) {
+        if (voices != 0) {
+            idleFrames = 0;
+            return;
+        }
+        if (idleFrames < 0) return;
+        idleFrames += numFrames;
+        if (idleFrames < sampleRate * kIdleSecondsBeforeLatencyReset) return;
+        if (audioStream->getBufferSizeInFrames() > latencyTuner->getMinimumBufferSize()) {
+            latencyTuner->requestReset();
+            latencyResets.fetch_add(1, std::memory_order_relaxed);
+        }
+        idleFrames = -1;
+    }
+
     // Oboe audio callback — renders FluidSynth audio into output buffer
     oboe::DataCallbackResult onAudioReady(
             oboe::AudioStream* audioStream, void* audioData, int32_t numFrames) override {
@@ -675,6 +709,7 @@ public:
         // Never wait for a non-RT thread: if a SoundFont load (or teardown) holds
         // the synth, emit silence for this buffer and leave queued events for later.
         std::unique_lock<std::mutex> lock(synthMutex, std::try_to_lock);
+        int voices = -1;  // unknown unless we render
         if (synth && !lock.owns_lock()) {
             lockedOutCallbacks.fetch_add(1, std::memory_order_relaxed);
             discardQueuedNoteOns.store(true, std::memory_order_relaxed);
@@ -711,7 +746,7 @@ public:
                 peakLevel.store(peak);
             }
 
-            int voices = fluid_synth_get_active_voice_count(synth);
+            voices = fluid_synth_get_active_voice_count(synth);
             if (voices > peakActiveVoices.load(std::memory_order_relaxed)) {
                 peakActiveVoices.store(voices, std::memory_order_relaxed);
             }
@@ -720,7 +755,10 @@ public:
         }
 
         // Grows the buffer one burst after an underrun (automatic mode only).
-        if (latencyTuner) latencyTuner->tune();
+        if (latencyTuner) {
+            relaxLatencyWhenIdle(audioStream, numFrames, voices);
+            latencyTuner->tune();
+        }
 
         recordCallbackStats(audioStream, numFrames, callbackStart);
         return oboe::DataCallbackResult::Continue;
@@ -832,10 +870,11 @@ float engine_get_peak_level(void* ptr) {
     return engine ? engine->getPeakLevel() : 0.0f;
 }
 
-// Fills out[11]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
+// Fills out[13]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
 // maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate,
 // droppedEvents, lockedOutCallbacks, maxCallbackCpu (core of the slowest callback),
-// slowCallbacks (total over 80% of the callback period)}.
+// slowCallbacks (total over 80% of the callback period), heapPagesRestored (swapped-out
+// pages the warmer read back), latencyResets (automatic buffer dropped back to minimum)}.
 // Returns the number of values written.
 int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
