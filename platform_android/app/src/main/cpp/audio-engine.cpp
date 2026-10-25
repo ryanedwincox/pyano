@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sched.h>
 #include <atomic>
 #include <string>
 #include <vector>
@@ -107,6 +108,8 @@ public:
     std::atomic<int> peakActiveVoices{0};
     std::atomic<int> droppedEvents{0};          // queue full; event discarded
     std::atomic<int> lockedOutCallbacks{0};     // callback output silence: synth busy (load)
+    std::atomic<int> maxCallbackCpu{-1};        // core that ran the slowest callback (big vs little)
+    std::atomic<int> slowCallbacks{0};          // callbacks that used over 80% of their time
 
     // Recording ring buffer: allocated once, reused across recordings
     // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
@@ -242,6 +245,10 @@ public:
             latencyTuner = std::make_unique<oboe::LatencyTuner>(*stream);
         }
 
+        // Lets Android raise the clock / move the callback thread to a big core when
+        // the render time climbs (e.g. a pedaled chord), instead of after it underruns.
+        stream->setPerformanceHintEnabled(true);
+
         result = stream->requestStart();
         if (result != oboe::Result::OK) {
             LOGE("Failed to start stream: %s", oboe::convertToText(result));
@@ -249,7 +256,7 @@ public:
         }
 
         LOGI("Audio stream started: sampleRate=%d, framesPerCallback=%d, deviceId=%d, "
-             "burst=%d, bufferSize=%d, capacity=%d, sharing=%s, perfMode=%s, api=%s",
+             "burst=%d, bufferSize=%d, capacity=%d, sharing=%s, perfMode=%s, api=%s, perfHint=on",
              stream->getSampleRate(), stream->getFramesPerCallback(), stream->getDeviceId(),
              stream->getFramesPerBurst(), stream->getBufferSizeInFrames(),
              stream->getBufferCapacityInFrames(),
@@ -455,7 +462,7 @@ public:
     }
 
     // Fills out[kAudioStatsCount]; see the layout comment on engine_get_audio_stats.
-    static constexpr int kAudioStatsCount = 9;
+    static constexpr int kAudioStatsCount = 11;
     void getAudioStats(int* out) {
         out[0] = totalXruns.load(std::memory_order_relaxed);
         out[1] = streamBufferFrames.load(std::memory_order_relaxed);
@@ -466,6 +473,8 @@ public:
         out[6] = sampleRate;
         out[7] = droppedEvents.load(std::memory_order_relaxed);
         out[8] = lockedOutCallbacks.load(std::memory_order_relaxed);
+        out[9] = maxCallbackCpu.load(std::memory_order_relaxed);
+        out[10] = slowCallbacks.load(std::memory_order_relaxed);
     }
 
     // --- Recording control (called from UI/drain thread) ---
@@ -649,6 +658,11 @@ public:
                 std::chrono::steady_clock::now() - callbackStart).count();
         if (micros > maxCallbackMicros.load(std::memory_order_relaxed)) {
             maxCallbackMicros.store(micros, std::memory_order_relaxed);
+            maxCallbackCpu.store(sched_getcpu(), std::memory_order_relaxed);
+        }
+        // micros > 80% of (numFrames / sampleRate) seconds
+        if ((int64_t)micros * sampleRate * 5 > (int64_t)numFrames * 1000000 * 4) {
+            slowCallbacks.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -818,9 +832,10 @@ float engine_get_peak_level(void* ptr) {
     return engine ? engine->getPeakLevel() : 0.0f;
 }
 
-// Fills out[9]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
+// Fills out[11]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
 // maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate,
-// droppedEvents, lockedOutCallbacks}.
+// droppedEvents, lockedOutCallbacks, maxCallbackCpu (core of the slowest callback),
+// slowCallbacks (total over 80% of the callback period)}.
 // Returns the number of values written.
 int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
