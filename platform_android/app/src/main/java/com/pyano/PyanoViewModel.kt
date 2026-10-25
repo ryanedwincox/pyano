@@ -441,7 +441,8 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 "slowCallbacks=${stats.slowCallbacks} " +
                 "peakVoices=${stats.peakVoices} rate=${stats.sampleRate} " +
                 "droppedEvents=${stats.droppedEvents} lockedOut=${stats.lockedOutCallbacks} " +
-                "pagesRestored=${stats.heapPagesRestored} latencyResets=${stats.latencyResets}"
+                "pagesRestored=${stats.heapPagesRestored} latencyResets=${stats.latencyResets} " +
+                "pinned=${stats.pinResult}"
             if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN) Log.w(AUDIO_TAG, msg) else Log.i(AUDIO_TAG, msg)
         }
         return stats.xruns

@@ -33,6 +33,8 @@ data class AudioStats(
     val heapPagesRestored: Int,
     /** Times automatic buffer sizing dropped back to its minimum after a pause. */
     val latencyResets: Int,
+    /** Callback thread pinned to the performance cores: 0 = yes, 1 = not tried, else errno. */
+    val pinResult: Int,
 ) {
     val bufferMs: Float get() = if (sampleRate > 0) bufferFrames * 1000f / sampleRate else 0f
 
@@ -131,9 +133,9 @@ class FluidSynthEngine {
 
     fun getAudioStats(): AudioStats? {
         if (enginePtr == 0L) return null
-        val v = IntArray(13)
+        val v = IntArray(14)
         if (nativeGetAudioStats(enginePtr, v) < v.size) return null
-        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12])
+        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13])
     }
 
     // --- Metronome ---

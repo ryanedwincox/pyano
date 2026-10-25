@@ -10,7 +10,10 @@
 #include <memory>
 #include <mutex>
 #include <sched.h>
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -35,6 +38,15 @@ static constexpr int kMetronomeDownbeatVelocity = 120;
 static constexpr int kMetronomeSubbeatVelocity  = 85;
 static constexpr int kMetronomeNoteOffMs = 80;
 static constexpr int kMaxSynthSampleRate = 96000;  // FluidSynth's synth.sample-rate ceiling
+// Automatic buffer sizing never grows past this. A bigger buffer only absorbs
+// scheduling jitter; once rendering itself takes longer than real time (too many
+// voices) it underruns at any size, and the extra latency just makes it worse.
+static constexpr int kMaxAutoBufferMs = 10;
+// Most voices rendered at once; beyond this FluidSynth steals the quietest
+// released ones. Sized so a full load fits a 2 ms callback on this class of
+// tablet with the callback on a performance core.
+static constexpr int kMaxPolyphony = 128;
+
 // Silence this long lets automatic buffer sizing drop back to its minimum, so one
 // stall doesn't keep the added latency for the rest of the session. Long enough
 // that a device which really needs the bigger buffer only re-learns it (one
@@ -121,6 +133,39 @@ public:
 
     HeapWarmer heapWarmer;                      // keeps swapped-out samples off the RT path
 
+    // The cores with the highest max frequency (big cluster). The callback thread
+    // pins itself there: the scheduler otherwise keeps it on little cores, where a
+    // pedaled passage on a multi-layer piano runs past the 2 ms deadline.
+    cpu_set_t performanceCores;
+    int performanceCoreCount = 0;
+    bool callbackPinned = false;                // RT-only; reset per stream
+    std::atomic<int> pinResult{1};              // 1 = not tried, 0 = pinned, else errno
+
+    void findPerformanceCores() {
+        CPU_ZERO(&performanceCores);
+        long cpus = sysconf(_SC_NPROCESSORS_CONF);
+        std::vector<long> maxFreq(cpus, 0);
+        long best = 0;
+        for (long c = 0; c < cpus; c++) {
+            char path[96];
+            snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", c);
+            if (FILE* f = fopen(path, "re")) {
+                if (fscanf(f, "%ld", &maxFreq[c]) != 1) maxFreq[c] = 0;
+                fclose(f);
+            }
+            best = std::max(best, maxFreq[c]);
+        }
+        for (long c = 0; c < cpus; c++) {
+            if (best > 0 && maxFreq[c] == best) {
+                CPU_SET(c, &performanceCores);
+                performanceCoreCount++;
+            }
+        }
+        // Pinning to every core would be a no-op; to all of an unknown topology, pointless.
+        if (performanceCoreCount == cpus) performanceCoreCount = 0;
+        LOGI("Performance cores: %d of %ld (max %ld kHz)", performanceCoreCount, cpus, best);
+    }
+
     // Recording ring buffer: allocated once, reused across recordings
     // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
     static constexpr size_t kRecordingBufferFloats = 48000 * 2 * 60;
@@ -161,7 +206,7 @@ public:
         fluid_settings_setint(settings, "synth.audio-channels", 1); // 1 stereo pair
         // Caps worst-case render cost (sustain pedal + stereo samples stack voices
         // fast); FluidSynth steals the quietest releasing voices beyond this.
-        fluid_settings_setint(settings, "synth.polyphony", 256);
+        fluid_settings_setint(settings, "synth.polyphony", kMaxPolyphony);
         // Chorus is not offered; keeping it inactive skips its processing entirely.
         fluid_settings_setint(settings, "synth.chorus.active", 0);
         // Only the audio callback (or a holder of synthMutex) calls into the synth,
@@ -181,6 +226,7 @@ public:
         fluid_synth_reverb_on(synth, -1, 0);
 
         heapWarmer.start();
+        findPerformanceCores();
 
         LOGI("FluidSynth created: sampleRate=%d, bufferFrames=%d", sampleRate, requestedBufferFrames);
         return true;
@@ -201,6 +247,7 @@ public:
         stopAudioLocked();    // never replace the tuner/stream under a running callback
         streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
         idleFrames = 0;
+        callbackPinned = false;
         discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         // Sample rate and callback size are deliberately left unset: the device's
         // native rate and burst-sized callbacks are what keep the stream on the
@@ -255,7 +302,9 @@ public:
         if (requestedBufferFrames > 0) {
             stream->setBufferSizeInFrames(requestedBufferFrames);
         } else {
-            latencyTuner = std::make_unique<oboe::LatencyTuner>(*stream);
+            int maxFrames = std::max(stream->getFramesPerBurst() * 2,
+                                     stream->getSampleRate() * kMaxAutoBufferMs / 1000);
+            latencyTuner = std::make_unique<oboe::LatencyTuner>(*stream, maxFrames);
         }
 
         // Lets Android raise the clock / move the callback thread to a big core when
@@ -476,7 +525,7 @@ public:
     }
 
     // Fills out[kAudioStatsCount]; see the layout comment on engine_get_audio_stats.
-    static constexpr int kAudioStatsCount = 13;
+    static constexpr int kAudioStatsCount = 14;
     void getAudioStats(int* out) {
         out[0] = totalXruns.load(std::memory_order_relaxed);
         out[1] = streamBufferFrames.load(std::memory_order_relaxed);
@@ -491,6 +540,7 @@ public:
         out[10] = slowCallbacks.load(std::memory_order_relaxed);
         out[11] = heapWarmer.pagesRestored();
         out[12] = latencyResets.load(std::memory_order_relaxed);
+        out[13] = pinResult.load(std::memory_order_relaxed);
     }
 
     // --- Recording control (called from UI/drain thread) ---
@@ -710,6 +760,15 @@ public:
         // the synth, emit silence for this buffer and leave queued events for later.
         std::unique_lock<std::mutex> lock(synthMutex, std::try_to_lock);
         int voices = -1;  // unknown unless we render
+        if (!callbackPinned) {
+            // One syscall per stream. Stays within our cpuset, so it fails rather than
+            // escaping it if the app is ever confined to the little cores.
+            callbackPinned = true;
+            if (performanceCoreCount > 0) {
+                pinResult.store(sched_setaffinity(0, sizeof(performanceCores), &performanceCores) == 0
+                                ? 0 : errno, std::memory_order_relaxed);
+            }
+        }
         if (synth && !lock.owns_lock()) {
             lockedOutCallbacks.fetch_add(1, std::memory_order_relaxed);
             discardQueuedNoteOns.store(true, std::memory_order_relaxed);
@@ -870,11 +929,12 @@ float engine_get_peak_level(void* ptr) {
     return engine ? engine->getPeakLevel() : 0.0f;
 }
 
-// Fills out[13]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
+// Fills out[14]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
 // maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate,
 // droppedEvents, lockedOutCallbacks, maxCallbackCpu (core of the slowest callback),
 // slowCallbacks (total over 80% of the callback period), heapPagesRestored (swapped-out
-// pages the warmer read back), latencyResets (automatic buffer dropped back to minimum)}.
+// pages the warmer read back), latencyResets (automatic buffer dropped back to minimum),
+// pinResult (callback thread on performance cores: 0 = pinned, 1 = not tried, else errno)}.
 // Returns the number of values written.
 int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
