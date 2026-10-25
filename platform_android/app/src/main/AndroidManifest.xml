@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- App op (granted via adb or Settings > Special access): wake the screen on a key press. -->
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
 
     <application
         android:allowBackup="true"

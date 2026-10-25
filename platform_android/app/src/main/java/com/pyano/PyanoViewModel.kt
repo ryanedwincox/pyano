@@ -63,6 +63,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val engine = FluidSynthEngine()
     private val midiManager = MidiDeviceManager(application)
     private var midiEventHandler: MidiEventHandler? = null
+    private val kiosk = KioskController(application)
     private var midiDevice: MidiDevice? = null
     private var audioDeviceCallback: AudioDeviceCallback? = null
 
@@ -317,7 +318,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         scanSoundFonts()
 
         // Set up MIDI device monitoring
-        midiEventHandler = MidiEventHandler(engine)
+        midiEventHandler = MidiEventHandler(engine).also { it.notePlayedListener = kiosk::onNotePlayed }
         refreshMidiDevices()
         midiManager.registerCallback(
             onDeviceAdded = { info ->
@@ -1196,6 +1197,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         loopEngine.stopPlayback()
         midiEventHandler?.recordingListener = null
         engine.stopMetronome()
+        kiosk.release()
         midiManager.destroy()
         audioDeviceCallback?.let { cb ->
             getApplication<Application>()

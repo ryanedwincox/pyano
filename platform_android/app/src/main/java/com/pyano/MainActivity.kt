@@ -41,6 +41,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Shown over the lock screen: a key press wakes the tablet straight into Pyano
+        // (KioskController) while every other app stays behind the PIN.
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+        }
 
         viewModel.initialize()
         requestStoragePermission()

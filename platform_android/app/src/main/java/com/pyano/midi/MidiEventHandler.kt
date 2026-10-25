@@ -21,6 +21,9 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
     /** When non-null, every NoteOn/NoteOff/CC event is forwarded here for loop recording. */
     @Volatile var recordingListener: MidiRecordingListener? = null
 
+    /** Called on every played note (NoteOn with velocity > 0), after it is sent to the synth. */
+    @Volatile var notePlayedListener: (() -> Unit)? = null
+
     // Running status — last channel-voice status byte seen (for MIDI running status support)
     private var runningStatus: Int = 0
 
@@ -60,6 +63,7 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                         engine.noteOn(channel, note, velocity)
                         activeNoteCount++
                         recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_ON, note, velocity)
+                        notePlayedListener?.invoke()
                     } else {
                         engine.noteOff(channel, note)
                         if (activeNoteCount > 0) activeNoteCount--
