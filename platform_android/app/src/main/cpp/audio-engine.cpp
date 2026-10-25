@@ -138,7 +138,7 @@ public:
     // pedaled passage on a multi-layer piano runs past the 2 ms deadline.
     cpu_set_t performanceCores;
     int performanceCoreCount = 0;
-    bool callbackPinned = false;                // RT-only; reset per stream
+    int framesUntilPinCheck = 0;                // RT-only; 0 = check on the next callback
     std::atomic<int> pinResult{1};              // 1 = not tried, 0 = pinned, else errno
 
     void findPerformanceCores() {
@@ -247,7 +247,7 @@ public:
         stopAudioLocked();    // never replace the tuner/stream under a running callback
         streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
         idleFrames = 0;
-        callbackPinned = false;
+        framesUntilPinCheck = 0;
         discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         // Sample rate and callback size are deliberately left unset: the device's
         // native rate and burst-sized callbacks are what keep the stream on the
@@ -760,13 +760,18 @@ public:
         // the synth, emit silence for this buffer and leave queued events for later.
         std::unique_lock<std::mutex> lock(synthMutex, std::try_to_lock);
         int voices = -1;  // unknown unless we render
-        if (!callbackPinned) {
-            // One syscall per stream. Stays within our cpuset, so it fails rather than
-            // escaping it if the app is ever confined to the little cores.
-            callbackPinned = true;
-            if (performanceCoreCount > 0) {
+        framesUntilPinCheck -= numFrames;
+        if (framesUntilPinCheck <= 0 && performanceCoreCount > 0) {
+            // Rechecked every second: moving the app between cpusets (e.g. the screen
+            // turning off puts it in "background", cores 0-5) resets the thread's
+            // affinity, and pinning fails (EINVAL) while the cpuset has no big core.
+            framesUntilPinCheck = sampleRate;
+            int cpu = sched_getcpu();
+            if (cpu < 0 || !CPU_ISSET(cpu, &performanceCores)) {
                 pinResult.store(sched_setaffinity(0, sizeof(performanceCores), &performanceCores) == 0
                                 ? 0 : errno, std::memory_order_relaxed);
+            } else {
+                pinResult.store(0, std::memory_order_relaxed);
             }
         }
         if (synth && !lock.owns_lock()) {
