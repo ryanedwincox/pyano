@@ -65,6 +65,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val midiManager = MidiDeviceManager(application)
     private var midiEventHandler: MidiEventHandler? = null
     private val kiosk = KioskController(application)
+
+    /** Set by MainActivity on start/stop; the poll loop slows down while nothing is shown. */
+    @Volatile var uiVisible = true
     private var midiDevice: MidiDevice? = null
     private var audioDeviceCallback: AudioDeviceCallback? = null
 
@@ -368,8 +371,18 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             var tick = 0
             var loggedXruns = 0
             while (true) {
-                delay(50) // 20Hz update rate
-                tick++
+                // 20 Hz while anything on screen or time-critical needs it (loop auto-stop
+                // at the boundary); otherwise once a second, which is all the stats and
+                // idle-pause checks need with the screen off.
+                val fast = uiVisible || _metronomeRunning.value || loopEngine.isPlaying ||
+                    loopEngine.isRecording || _isAudioRecording.value
+                if (fast) {
+                    delay(50)
+                    tick++
+                } else {
+                    delay(1000)
+                    tick = (tick / AUDIO_STATS_INTERVAL_TICKS + 1) * AUDIO_STATS_INTERVAL_TICKS
+                }
                 if (tick % AUDIO_STATS_INTERVAL_TICKS == 0) {
                     loggedXruns = logAudioStats(loggedXruns, tick % AUDIO_STATS_HEARTBEAT_TICKS == 0)
                     pauseAudioIfIdle()

@@ -258,6 +258,7 @@ public:
         idleFrames = 0;
         framesUntilPinCheck = 0;
         pausedForIdle.store(false);
+        heapWarmer.setIdle(false);
         resumeRequestedNs.store(0, std::memory_order_relaxed);
         discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         // Sample rate and callback size are deliberately left unset: the device's
@@ -450,6 +451,7 @@ public:
         if (!stream || pausedForIdle.load()) return false;
         if (stream->requestPause() != oboe::Result::OK) return false;
         pausedForIdle.store(true);
+        heapWarmer.setIdle(true);
         LOGI("Audio paused while idle");
         return true;
     }
@@ -467,6 +469,7 @@ public:
                 std::chrono::steady_clock::now() - start).count();
         lastResumeCallMicros.store(callMicros, std::memory_order_relaxed);
         pausedForIdle.store(false);
+        heapWarmer.setIdle(false);
         LOGI("Audio resumed: requestStart %s in %d us", oboe::convertToText(result), callMicros);
     }
 

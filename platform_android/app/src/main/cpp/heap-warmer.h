@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <pthread.h>
 #include <thread>
 #include <vector>
 #include <sys/mman.h>
@@ -46,16 +47,25 @@ public:
         if (thread_.joinable()) thread_.join();
     }
 
+    // Idle (output paused, nobody playing): check far less often. Leaving idle runs a
+    // pass right away so the first notes after a pause find most pages resident.
+    void setIdle(bool idle) {
+        bool was = idle_.exchange(idle);
+        if (was && !idle) cv_.notify_all();
+    }
+
     // Non-resident pages read since start (cumulative). Includes never-touched and
     // allocator-released pages (they map the shared zero page), so it overstates swap-ins.
     int pagesRestored() const { return restored_.load(std::memory_order_relaxed); }
 
 private:
     static constexpr auto kInterval = std::chrono::seconds(2);
+    static constexpr auto kIdleInterval = std::chrono::seconds(30);
     static constexpr size_t kMinRegionBytes = 1 << 20;
     static constexpr size_t kBatch = 512;  // remote iovecs per process_vm_readv (<= IOV_MAX)
 
     void run() {
+        pthread_setname_np(pthread_self(), "HeapWarmer");
         setpriority(PRIO_PROCESS, 0, 10);  // this thread only; stays clear of the UI and audio
         long page = sysconf(_SC_PAGESIZE);
         std::unique_lock<std::mutex> lock(mutex_);
@@ -66,7 +76,9 @@ private:
                 restored_.fetch_add(restored, std::memory_order_relaxed);
             }
             lock.lock();
-            cv_.wait_for(lock, kInterval, [this] { return stopping_; });
+            bool wasIdle = idle_.load();
+            cv_.wait_for(lock, wasIdle ? kIdleInterval : kInterval,
+                         [this, wasIdle] { return stopping_ || (wasIdle && !idle_.load()); });
         }
     }
 
@@ -121,6 +133,7 @@ private:
     std::condition_variable cv_;
     bool stopping_ = false;
     std::atomic<int> restored_{0};
+    std::atomic<bool> idle_{false};
     // Reused across passes; touched only by the warmer thread.
     std::vector<Region> regions_;
     std::vector<unsigned char> residency_;

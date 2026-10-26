@@ -66,6 +66,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        viewModel.uiVisible = true
+    }
+
+    override fun onStop() {
+        viewModel.uiVisible = false
+        super.onStop()
+    }
+
     override fun onDestroy() {
         // Only stop the service when the user actually closes the app, not on
         // configuration changes (rotation, etc).
