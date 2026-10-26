@@ -141,6 +141,15 @@ public:
     int framesUntilPinCheck = 0;                // RT-only; 0 = check on the next callback
     std::atomic<int> pinResult{1};              // 1 = not tried, 0 = pinned, else errno
 
+    // Idle pause: Android counts a running media stream as "music playing" even when
+    // it is silent, and after 20 h of that above the safe level it drops the volume
+    // and asks for the hearing warning again. Pausing while nobody plays keeps that
+    // clock to real playing time. Anything that makes sound resumes it.
+    std::atomic<bool> pausedForIdle{false};
+    std::atomic<int64_t> resumeRequestedNs{0};  // set on resume; the first callback clears it
+    std::atomic<int> lastResumeCallMicros{0};   // requestStart() duration
+    std::atomic<int> lastResumeFirstCallbackMicros{0};  // resume request -> first callback
+
     void findPerformanceCores() {
         CPU_ZERO(&performanceCores);
         long cpus = sysconf(_SC_NPROCESSORS_CONF);
@@ -248,6 +257,8 @@ public:
         streamXrunsSeen = 0;  // new stream starts its xrun counter at zero
         idleFrames = 0;
         framesUntilPinCheck = 0;
+        pausedForIdle.store(false);
+        resumeRequestedNs.store(0, std::memory_order_relaxed);
         discardQueuedNoteOns.store(true, std::memory_order_relaxed);
         // Sample rate and callback size are deliberately left unset: the device's
         // native rate and burst-sized callbacks are what keep the stream on the
@@ -430,6 +441,33 @@ public:
 
     void noteOn(int channel, int note, int velocity) {
         pushEvent({SynthEvent::NoteOn, {channel, note, velocity, 0}, {}});
+        resumeFromIdle();  // after queueing, so the first callback plays it
+    }
+
+    // Pauses (not closes) the stream; returns true if it is now paused. UI thread.
+    bool pauseForIdle() {
+        std::lock_guard<std::mutex> lock(streamMutex);
+        if (!stream || pausedForIdle.load()) return false;
+        if (stream->requestPause() != oboe::Result::OK) return false;
+        pausedForIdle.store(true);
+        LOGI("Audio paused while idle");
+        return true;
+    }
+
+    // Cheap no-op unless paused. Any thread except the RT callback.
+    void resumeFromIdle() {
+        if (!pausedForIdle.load(std::memory_order_acquire)) return;
+        std::lock_guard<std::mutex> lock(streamMutex);
+        if (!stream || !pausedForIdle.load()) return;
+        auto start = std::chrono::steady_clock::now();
+        resumeRequestedNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                start.time_since_epoch()).count(), std::memory_order_relaxed);
+        oboe::Result result = stream->requestStart();
+        int callMicros = (int)std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count();
+        lastResumeCallMicros.store(callMicros, std::memory_order_relaxed);
+        pausedForIdle.store(false);
+        LOGI("Audio resumed: requestStart %s in %d us", oboe::convertToText(result), callMicros);
     }
 
     void noteOff(int channel, int note) {
@@ -525,7 +563,7 @@ public:
     }
 
     // Fills out[kAudioStatsCount]; see the layout comment on engine_get_audio_stats.
-    static constexpr int kAudioStatsCount = 14;
+    static constexpr int kAudioStatsCount = 17;
     void getAudioStats(int* out) {
         out[0] = totalXruns.load(std::memory_order_relaxed);
         out[1] = streamBufferFrames.load(std::memory_order_relaxed);
@@ -541,11 +579,15 @@ public:
         out[11] = heapWarmer.pagesRestored();
         out[12] = latencyResets.load(std::memory_order_relaxed);
         out[13] = pinResult.load(std::memory_order_relaxed);
+        out[14] = pausedForIdle.load(std::memory_order_relaxed) ? 1 : 0;
+        out[15] = lastResumeCallMicros.load(std::memory_order_relaxed);
+        out[16] = lastResumeFirstCallbackMicros.load(std::memory_order_relaxed);
     }
 
     // --- Recording control (called from UI/drain thread) ---
 
     void startRecording() {
+        resumeFromIdle();
         if (!recordingBuffer) {
             recordingBuffer = new SpscRingBuffer<float>(kRecordingBufferFloats);
         } else {
@@ -579,6 +621,7 @@ public:
     }
 
     void startMetronome() {
+        resumeFromIdle();
         recalcSamplesPerBeat();
         metronomeCurrentBeat.store(0, std::memory_order_relaxed);
         metronomeRunning.store(true, std::memory_order_release);
@@ -754,6 +797,12 @@ public:
     oboe::DataCallbackResult onAudioReady(
             oboe::AudioStream* audioStream, void* audioData, int32_t numFrames) override {
         auto callbackStart = std::chrono::steady_clock::now();
+        if (int64_t requested = resumeRequestedNs.load(std::memory_order_relaxed)) {
+            int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    callbackStart.time_since_epoch()).count();
+            lastResumeFirstCallbackMicros.store((int)((now - requested) / 1000), std::memory_order_relaxed);
+            resumeRequestedNs.store(0, std::memory_order_relaxed);
+        }
         auto* output = static_cast<float*>(audioData);
 
         // Never wait for a non-RT thread: if a SoundFont load (or teardown) holds
@@ -914,6 +963,11 @@ void engine_stop_audio(void* ptr) {
     if (engine) engine->stopAudio();
 }
 
+int engine_pause_for_idle(void* ptr) {
+    auto* engine = static_cast<PyanoEngine*>(ptr);
+    return engine && engine->pauseForIdle() ? 1 : 0;
+}
+
 int engine_set_buffer_size(void* ptr, int bufferFrames) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     return engine && engine->setBufferSize(bufferFrames) ? 1 : 0;
@@ -934,12 +988,14 @@ float engine_get_peak_level(void* ptr) {
     return engine ? engine->getPeakLevel() : 0.0f;
 }
 
-// Fills out[14]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
+// Fills out[17]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
 // maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate,
 // droppedEvents, lockedOutCallbacks, maxCallbackCpu (core of the slowest callback),
 // slowCallbacks (total over 80% of the callback period), heapPagesRestored (swapped-out
 // pages the warmer read back), latencyResets (automatic buffer dropped back to minimum),
-// pinResult (callback thread on performance cores: 0 = pinned, 1 = not tried, else errno)}.
+// pinResult (callback thread on performance cores: 0 = pinned, 1 = not tried, else errno),
+// pausedForIdle (0/1), lastResumeCallMicros (requestStart duration), lastResumeFirstCallbackMicros
+// (resume request to first callback)}.
 // Returns the number of values written.
 int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
     auto* engine = static_cast<PyanoEngine*>(ptr);

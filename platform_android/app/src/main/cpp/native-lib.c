@@ -28,6 +28,7 @@ void engine_set_reverb(void* engine, float roomsize, float damping, float width,
 void engine_set_reverb_on(void* engine, int on);
 int engine_start_audio(void* engine);
 void engine_stop_audio(void* engine);
+int engine_pause_for_idle(void* engine);
 int engine_set_buffer_size(void* engine, int bufferSize);
 int engine_get_presets(void* engine, int sfId, int* banks, int* programs, const char** names, int maxPresets);
 int engine_set_audio_device(void* engine, int deviceId);
@@ -127,6 +128,11 @@ Java_com_pyano_audio_FluidSynthEngine_nativeStopAudio(JNIEnv* env, jobject thiz,
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_pyano_audio_FluidSynthEngine_nativePauseForIdle(JNIEnv* env, jobject thiz, jlong ptr) {
+    return engine_pause_for_idle((void*)(intptr_t)ptr) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeSetBufferSize(JNIEnv* env, jobject thiz,
                                                            jlong ptr, jint bufferSize) {
     return engine_set_buffer_size((void*)(intptr_t)ptr, bufferSize) ? JNI_TRUE : JNI_FALSE;
@@ -146,9 +152,9 @@ Java_com_pyano_audio_FluidSynthEngine_nativeGetPeakLevel(JNIEnv* env, jobject th
 JNIEXPORT jint JNICALL
 Java_com_pyano_audio_FluidSynthEngine_nativeGetAudioStats(JNIEnv* env, jobject thiz,
                                                           jlong ptr, jintArray out) {
-    int values[16];
+    int values[32];
     jsize len = (*env)->GetArrayLength(env, out);
-    if (len > 16) len = 16;
+    if (len > 32) len = 32;
     int count = engine_get_audio_stats((void*)(intptr_t)ptr, values, len);
     if (count > 0) (*env)->SetIntArrayRegion(env, out, 0, count, values);
     return count;

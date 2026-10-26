@@ -29,9 +29,14 @@ class KioskController(context: Context) {
 
     @Volatile private var lastRefreshMs = Long.MIN_VALUE / 2
 
+    /** elapsedRealtime of the last played note (or of startup). */
+    @Volatile var lastNoteMs = SystemClock.elapsedRealtime()
+        private set
+
     /** Called from the MIDI thread on every note-on; cheap unless a refresh is due. */
     fun onNotePlayed() {
         val now = SystemClock.elapsedRealtime()
+        lastNoteMs = now
         if (now - lastRefreshMs < REFRESH_INTERVAL_MS) return
         lastRefreshMs = now
         try {

@@ -35,6 +35,11 @@ data class AudioStats(
     val latencyResets: Int,
     /** Callback thread pinned to the performance cores: 0 = yes, 1 = not tried, else errno. */
     val pinResult: Int,
+    /** Output paused because nothing has played for a while. */
+    val pausedForIdle: Boolean,
+    /** Last resume: how long requestStart() took, and from the request to the first callback. */
+    val lastResumeCallMicros: Int,
+    val lastResumeFirstCallbackMicros: Int,
 ) {
     val bufferMs: Float get() = if (sampleRate > 0) bufferFrames * 1000f / sampleRate else 0f
 
@@ -78,6 +83,9 @@ class FluidSynthEngine {
     fun stopAudio() {
         if (enginePtr != 0L) nativeStopAudio(enginePtr)
     }
+
+    /** Pauses output until something plays (note, metronome, recording). True if now paused. */
+    fun pauseForIdle(): Boolean = enginePtr != 0L && nativePauseForIdle(enginePtr)
 
     fun loadSoundFont(path: String): Int {
         if (enginePtr == 0L) return -1
@@ -133,9 +141,10 @@ class FluidSynthEngine {
 
     fun getAudioStats(): AudioStats? {
         if (enginePtr == 0L) return null
-        val v = IntArray(14)
+        val v = IntArray(17)
         if (nativeGetAudioStats(enginePtr, v) < v.size) return null
-        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13])
+        return AudioStats(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13],
+                          v[14] != 0, v[15], v[16])
     }
 
     // --- Metronome ---
@@ -256,6 +265,7 @@ class FluidSynthEngine {
     private external fun nativeDestroy(ptr: Long)
     private external fun nativeStartAudio(ptr: Long): Boolean
     private external fun nativeStopAudio(ptr: Long)
+    private external fun nativePauseForIdle(ptr: Long): Boolean
     private external fun nativeLoadSoundFont(ptr: Long, path: String): Int
     private external fun nativeProgramSelect(ptr: Long, channel: Int, sfId: Int, bank: Int, preset: Int)
     private external fun nativeNoteOn(ptr: Long, channel: Int, note: Int, velocity: Int)

@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.media.midi.MidiDevice
 import android.media.midi.MidiDeviceInfo
 import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -371,6 +372,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 tick++
                 if (tick % AUDIO_STATS_INTERVAL_TICKS == 0) {
                     loggedXruns = logAudioStats(loggedXruns, tick % AUDIO_STATS_HEARTBEAT_TICKS == 0)
+                    pauseAudioIfIdle()
                 }
                 // MIDI input activity: true if event in last 200ms
                 val handler = midiEventHandler
@@ -443,10 +445,26 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 "peakVoices=${stats.peakVoices} rate=${stats.sampleRate} " +
                 "droppedEvents=${stats.droppedEvents} lockedOut=${stats.lockedOutCallbacks} " +
                 "pagesRestored=${stats.heapPagesRestored} latencyResets=${stats.latencyResets} " +
-                "pinned=${stats.pinResult}"
+                "pinned=${stats.pinResult} paused=${stats.pausedForIdle} " +
+                "lastResume=${stats.lastResumeCallMicros}us/${stats.lastResumeFirstCallbackMicros}us"
             if (newXruns > 0 || load > AUDIO_STATS_LOAD_WARN) Log.w(AUDIO_TAG, msg) else Log.i(AUDIO_TAG, msg)
         }
         return stats.xruns
+    }
+
+    /**
+     * Pauses output once nothing has been played for as long as the screen stays awake
+     * after a note. Android counts even a silent running stream as music playing and,
+     * after 20 h of that above the safe level, drops the volume and shows the hearing
+     * warning again; pausing keeps that clock to real playing time. The engine resumes
+     * by itself on the next note, metronome start or recording.
+     */
+    private fun pauseAudioIfIdle() {
+        val stats = _audioStats.value ?: return
+        if (stats.pausedForIdle || stats.peakVoices > 0) return
+        if (SystemClock.elapsedRealtime() - kiosk.lastNoteMs < KioskController.AWAKE_AFTER_LAST_NOTE_MS) return
+        if (_metronomeRunning.value || loopEngine.isPlaying || loopEngine.isRecording || audioRecorder.isRecording) return
+        engine.pauseForIdle()
     }
 
     /**
