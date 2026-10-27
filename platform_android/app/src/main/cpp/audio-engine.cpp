@@ -426,6 +426,13 @@ public:
     void pushEvent(const SynthEvent& ev) {
         bool essential = ev.type == SynthEvent::NoteOff || ev.type == SynthEvent::ProgramSelect ||
                          ev.type == SynthEvent::ReverbOn;
+        if (pausedForIdle.load(std::memory_order_acquire)) {
+            // No callback is draining the queue, so apply the backlog here; otherwise a
+            // burst of CCs (e.g. a keyboard sending its state when switched on) fills it
+            // and the note that wakes the stream is dropped.
+            std::unique_lock<std::mutex> synthLock(synthMutex, std::try_to_lock);
+            if (synthLock.owns_lock() && synth) drainEvents();
+        }
         std::lock_guard<std::mutex> lock(producerMutex);
         bool roomForIt = essential || eventQueue.availableWrite() > kReservedEventSlots;
         if (!roomForIt || eventQueue.write(&ev, 1) == 0) {
@@ -493,7 +500,8 @@ public:
         pushEvent({SynthEvent::ReverbOn, {on ? 1 : 0, 0, 0, 0}, {}});
     }
 
-    // RT thread only, with synthMutex held.
+    // The callback, or pushEvent while paused for idle; synthMutex held either way,
+    // which keeps it a single consumer.
     void drainEvents() {
         bool skipNoteOns = discardQueuedNoteOns.exchange(false, std::memory_order_relaxed);
         SynthEvent ev;
