@@ -514,6 +514,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         val outputs = mutableListOf(AudioOutput(0, "Default", 0))
         for (device in devices) {
+            // The phone-call uplink and earpiece show up as outputs too; playing there is silent.
+            if (device.type == AudioDeviceInfo.TYPE_TELEPHONY ||
+                device.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) continue
             val typeName = when (device.type) {
                 AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Speaker"
                 AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
