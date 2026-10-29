@@ -16,13 +16,13 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import com.pyano.ui.PyanoApp
 import com.pyano.ui.theme.PyanoTheme
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: PyanoViewModel by viewModels()
+    private val pyano get() = application as PyanoApplication
+    private val viewModel get() = pyano.viewModel
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
             window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
         }
 
+        pyano.activityCreated()
         viewModel.initialize()
         requestStoragePermission()
         requestNotificationPermissionIfNeeded()
@@ -68,18 +69,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        viewModel.uiVisible = true
+        viewModel.screenStarted()
     }
 
     override fun onStop() {
-        viewModel.uiVisible = false
+        viewModel.screenStopped()
         super.onStop()
     }
 
     override fun onDestroy() {
-        // Only stop the service when the user actually closes the app, not on
-        // configuration changes (rotation, etc).
-        if (isFinishing) {
+        // Only stop the service when the user closes the last Pyano window, not on
+        // configuration changes (rotation, etc) or while a second instance remains.
+        if (pyano.activityDestroyed(isFinishing)) {
             PyanoAudioService.stop(this)
         }
         super.onDestroy()

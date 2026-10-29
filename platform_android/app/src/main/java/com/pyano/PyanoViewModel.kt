@@ -58,6 +58,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         private const val CC_REVERB_SEND = 91
         private const val CC_CHORUS_SEND = 93
         private const val METRONOME_CHANNEL = 9
+        private val DIAGNOSED_OUTPUT_TYPES = setOf(
+            AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_HDMI,
+        )
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
@@ -65,9 +70,20 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val midiManager = MidiDeviceManager(application)
     private var midiEventHandler: MidiEventHandler? = null
     private val kiosk = KioskController(application)
+    val diagnostics = DeviceDiagnostics(application)
 
-    /** Set by MainActivity on start/stop; the poll loop slows down while nothing is shown. */
-    @Volatile var uiVisible = true
+    /** MainActivity instances started; the poll loop slows down while none is shown. */
+    private val visibleScreens = java.util.concurrent.atomic.AtomicInteger(0)
+    private val uiVisible get() = visibleScreens.get() > 0
+    private var initialized = false
+
+    fun screenStarted() {
+        visibleScreens.incrementAndGet()
+    }
+
+    fun screenStopped() {
+        visibleScreens.decrementAndGet()
+    }
     private var midiDevice: MidiDevice? = null
     private var audioDeviceCallback: AudioDeviceCallback? = null
 
@@ -103,6 +119,10 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedAudioOutput = MutableStateFlow<AudioOutput?>(null)
     val selectedAudioOutput = _selectedAudioOutput.asStateFlow()
+
+    /** Why the chosen output isn't available, or null when it is (or Default is chosen). */
+    private val _outputProblem = MutableStateFlow<String?>(null)
+    val outputProblem = _outputProblem.asStateFlow()
 
     // Activity monitors
     private val _midiInputLevel = MutableStateFlow(false) // true = activity
@@ -229,8 +249,6 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val savedSfPath = prefs.getString("sfPath", null)
     private val savedSfFileName = prefs.getString("sfFileName", null)
     private val savedPresetIndex = prefs.getInt("presetIndex", 0)
-    // Stable name+type key (preferred). Falls back to legacy id-based pref for one migration cycle.
-    private val savedAudioOutputKey = prefs.getString("audioOutputKey", null)
     private val savedMidiDeviceName = prefs.getString("midiDeviceName", null)
 
     private fun save(key: String, value: Float) = prefs.edit().putFloat(key, value).apply()
@@ -245,7 +263,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoading = MutableStateFlow(true)
     val isLoading = _isLoading.asStateFlow()
 
+    /** Called by every MainActivity instance; only the first call sets things up. */
     fun initialize() {
+        if (initialized) return
+        initialized = true
+        diagnostics.start()
+        viewModelScope.launch { diagnostics.usbGeneration.collect { updateOutputProblem() } }
+
         if (!engine.create(nativeOutputSampleRate(), _bufferSize.value)) {
             Log.e(TAG, "Failed to create engine")
             return
@@ -326,6 +350,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         refreshMidiDevices()
         midiManager.registerCallback(
             onDeviceAdded = { info ->
+                diagnostics.record(DiagEvent.Kind.Connected, "MIDI input added: ${midiManager.getDeviceName(info)}")
                 refreshMidiDevices()
                 // Sticky reconnect: if nothing is currently bound, and either the new
                 // device matches our remembered one or we have no remembered device,
@@ -338,6 +363,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             onDeviceRemoved = { info ->
+                diagnostics.record(DiagEvent.Kind.Disconnected, "MIDI input removed: ${midiManager.getDeviceName(info)}")
                 if (_selectedMidiDevice.value?.id == info.id) {
                     disconnectMidi()
                 }
@@ -537,6 +563,43 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         }
         _audioOutputs.value = outputs
         Log.i(TAG, "Found ${outputs.size} audio outputs")
+        updateOutputProblem()
+    }
+
+    /**
+     * Explains a missing chosen output by the layer that lost it: off the USB bus
+     * entirely (cable, power or hub), or on the bus but not opened by Android's
+     * audio service (replugging just that device usually fixes it).
+     */
+    private fun updateOutputProblem() {
+        val key = prefs.getString("audioOutputKey", null)
+        if (key == null || key == "default" || _audioOutputs.value.any { it.preferredKey == key }) {
+            _outputProblem.value = null
+            return
+        }
+        val name = key.substringAfter('|')
+        val type = key.substringBefore('|').toIntOrNull()
+        val isUsb = type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET
+        // Names are "<type> (<product>)"; the product is what the USB bus reports.
+        val product = name.substringAfter('(', "").substringBeforeLast(')', "")
+        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+        _outputProblem.value = buildString {
+            when {
+                !isUsb || product.isEmpty() -> append("$name is not connected.")
+                diagnostics.usbDevices.value.any { it.name == product } ->
+                    append("$name is on USB but Android hasn't opened it for audio. Replug just that device.")
+                else -> {
+                    append("$name is not on the USB bus")
+                    diagnostics.lastDetachMs(product)?.let { append(" (it left at ${time.format(java.util.Date(it))})") }
+                    append(". Check its power and cable, then the hub.")
+                }
+            }
+            if (isUsb && product.isNotEmpty()) {
+                val attaches = diagnostics.recentAttaches(product)
+                if (attaches >= 3) append(" It reconnected $attaches times in 10 minutes: the connection is unstable.")
+            }
+            append(" Playing through Default meanwhile.")
+        }
     }
 
     fun setAudioOutput(output: AudioOutput) {
@@ -560,7 +623,8 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
      * if the remembered device isn't currently present.
      */
     private fun tryRebindPreferredAudio() {
-        val key = savedAudioOutputKey ?: _selectedAudioOutput.value?.preferredKey ?: return
+        // Read each time: the startup value goes stale once the user picks another output.
+        val key = prefs.getString("audioOutputKey", null) ?: _selectedAudioOutput.value?.preferredKey ?: return
         val match = _audioOutputs.value.firstOrNull { it.preferredKey == key }
         if (match != null && match.preferredKey != _selectedAudioOutput.value?.preferredKey) {
             setAudioOutput(match)
@@ -572,11 +636,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             .getSystemService(AudioManager::class.java)
         audioDeviceCallback = object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                recordAudioDevices(addedDevices, added = true)
                 refreshAudioOutputs()
                 tryRebindPreferredAudio()
             }
 
             override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                recordAudioDevices(removedDevices, added = false)
                 refreshAudioOutputs()
                 // If the active output went away, fall back to the Default entry.
                 val current = _selectedAudioOutput.value ?: return
@@ -590,6 +656,22 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+    }
+
+    private var audioDevicesPrimed = false
+
+    private fun recordAudioDevices(devices: Array<out AudioDeviceInfo>?, added: Boolean) {
+        // The callback's first call lists every existing device; the startup line covers those.
+        if (!audioDevicesPrimed) {
+            audioDevicesPrimed = true
+            return
+        }
+        devices?.filter { it.isSink && it.type in DIAGNOSED_OUTPUT_TYPES }?.forEach {
+            diagnostics.record(
+                if (added) DiagEvent.Kind.Connected else DiagEvent.Kind.Disconnected,
+                "Audio output ${if (added) "added" else "removed"}: ${it.productName} (type ${it.type})",
+            )
+        }
     }
 
     fun midiDeviceName(info: MidiDeviceInfo): String = midiManager.getDeviceName(info)
@@ -1232,6 +1314,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         midiEventHandler?.recordingListener = null
         engine.stopMetronome()
         kiosk.release()
+        diagnostics.stop()
         midiManager.destroy()
         audioDeviceCallback?.let { cb ->
             getApplication<Application>()

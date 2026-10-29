@@ -1,4 +1,4 @@
-// PyanoApp: Top-level scaffold with tab navigation (Synth, Metronome, Loops, Recorder). NOT concerned with tab content.
+// PyanoApp: Top-level scaffold with tab navigation (Synth, Metronome, Loops, Recorder, Devices). NOT concerned with tab content.
 package com.pyano.ui
 
 import androidx.compose.foundation.Image
@@ -16,12 +16,14 @@ private enum class AppTab(val title: String) {
     Metronome("Metronome"),
     Loops("Loops"),
     Recorder("Recorder"),
+    Devices("Devices"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
     val selectedTab by viewModel.selectedTab.collectAsState()
+    val outputProblem by viewModel.outputProblem.collectAsState()
 
     Scaffold(
         topBar = {
@@ -54,6 +56,20 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
                         )
                     }
                 }
+                // The chosen output dropped out: say which layer lost it, wherever the user is.
+                outputProblem?.let { problem ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        onClick = { viewModel.setSelectedTab(AppTab.Devices.ordinal) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            problem,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                }
             }
         }
     ) { padding ->
@@ -63,6 +79,7 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
                 AppTab.Metronome.ordinal -> MetronomeTab(viewModel)
                 AppTab.Loops.ordinal -> LoopStationTab(viewModel)
                 AppTab.Recorder.ordinal -> RecorderTab(viewModel)
+                AppTab.Devices.ordinal -> DevicesTab(viewModel)
                 else -> SynthTab(viewModel) // Fallback for corrupt prefs
             }
         }

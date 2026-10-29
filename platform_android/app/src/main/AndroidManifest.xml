@@ -23,6 +23,7 @@
     </queries>
 
     <application
+        android:name=".PyanoApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -40,7 +41,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!-- Selectable as the home app (kiosk): starts after boot and on Home.
-                 singleTask so Home reuses the running instance instead of a second engine. -->
+                 singleTask keeps one instance per task, but Android still keeps a separate
+                 one in the home task; PyanoApplication shares one engine between them. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
