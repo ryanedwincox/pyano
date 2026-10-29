@@ -1,4 +1,4 @@
-// DevicesTab: Shows the USB devices on the bus now and the connection history, to diagnose a dropped audio interface.
+// DevicesPanel: Shows the USB devices on the bus now and the connection history, to diagnose a dropped audio interface.
 // NOT concerned with: selecting outputs (SynthTab) or recording the events (DeviceDiagnostics).
 package com.pyano.ui
 
@@ -22,7 +22,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun DevicesTab(viewModel: PyanoViewModel) {
+fun DevicesPanel(viewModel: PyanoViewModel) {
     val diagnostics = viewModel.diagnostics
     val usbDevices by diagnostics.usbDevices.collectAsState()
     val events by diagnostics.events.collectAsState()
