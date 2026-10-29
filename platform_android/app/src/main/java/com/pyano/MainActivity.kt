@@ -86,9 +86,11 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** The regular launcher (e.g. One UI Home), for when Pyano is the home app. */
+    /** The regular launcher (e.g. One UI Home), or null unless Pyano is the default home app. */
     private fun otherLauncher(): Intent? {
         val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val defaultHome = packageManager.resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY)
+        if (defaultHome?.activityInfo?.packageName != packageName) return null
         val launcher = packageManager.queryIntentActivities(home, 0).firstOrNull {
             // Settings' FallbackHome only covers the time before the first unlock.
             it.activityInfo.packageName != packageName && it.activityInfo.packageName != "com.android.settings"
