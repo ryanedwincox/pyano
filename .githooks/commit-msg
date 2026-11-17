@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Concern: requires coding standards review | Non-concern: mechanical source checks | IO: (commit message) -> verdict
+set -euo pipefail
+cd -- "$(git rev-parse --show-toplevel)"
+if ! command -v git-agent-verdict >/dev/null; then
+  echo 'Missing git-agent-verdict; see docs/quality.md.' >&2
+  exit 1
+fi
+git agent-verdict --require-version 2.4
+git agent-verdict "$1" standards --read-only --doc docs/standards.md --path .
