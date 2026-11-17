@@ -1,4 +1,4 @@
-// PyanoApp: Top-level scaffold with tab navigation (Synth, Metronome, Loops, Recorder) and the Devices pop-up. NOT concerned with tab content.
+// Concern: renders workstation navigation | Non-concern: tab contents | IO: (selected tab) -> app scaffold
 package com.pyano.ui
 
 import androidx.compose.foundation.Image

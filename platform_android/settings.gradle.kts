@@ -1,3 +1,4 @@
+// Concern: configures Gradle modules and repositories | Non-concern: plugin versions | IO: none
 pluginManagement {
     repositories {
         google()

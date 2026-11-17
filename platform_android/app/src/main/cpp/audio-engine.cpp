@@ -1,5 +1,4 @@
-// audio-engine.cpp: Native real-time audio core — FluidSynth synthesis + Oboe output, metronome, and recording.
-// NOT concerned with: JNI marshaling (see native-lib.c), UI state, or Kotlin-level logic.
+// Concern: renders synthesizer audio | Non-concern: JNI marshaling | IO: (synth events) -> PCM
 #include <oboe/Oboe.h>
 #include <android/log.h>
 #include <chrono>
@@ -28,9 +27,7 @@ extern "C" {
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// Metronome plays real GM percussion samples on FluidSynth channel 9,
-// routed to a dedicated drum-kit soundfont (FluidR3_GM bank 128 preset 0)
-// so it is independent of whichever piano soundfont the user has loaded.
+// Route channel 9 to a dedicated GM drum kit (bank 128, preset 0), independent of the selected piano.
 static constexpr int kMetronomeChannel = 9;
 static constexpr int kMetronomeDrumBank = 128;
 static constexpr int kMetronomeDrumPreset = 0;
@@ -38,24 +35,15 @@ static constexpr int kMetronomeDownbeatVelocity = 120;
 static constexpr int kMetronomeSubbeatVelocity  = 85;
 static constexpr int kMetronomeNoteOffMs = 80;
 static constexpr int kMaxSynthSampleRate = 96000;  // FluidSynth's synth.sample-rate ceiling
-// Automatic buffer sizing never grows past this. A bigger buffer only absorbs
-// scheduling jitter; once rendering itself takes longer than real time (too many
-// voices) it underruns at any size, and the extra latency just makes it worse.
+// Cap jitter buffering: larger buffers cannot fix rendering that exceeds real time and only increase latency.
 static constexpr int kMaxAutoBufferMs = 10;
-// Most voices rendered at once; beyond this FluidSynth steals the quietest
-// released ones. Sized so a full load fits a 2 ms callback on this class of
-// tablet with the callback on a performance core.
+// Cap voices to fit a 2 ms callback on a performance core; FluidSynth steals quiet released voices beyond this.
 static constexpr int kMaxPolyphony = 128;
 
-// Silence this long lets automatic buffer sizing drop back to its minimum, so one
-// stall doesn't keep the added latency for the rest of the session. Long enough
-// that a device which really needs the bigger buffer only re-learns it (one
-// underrun per burst of growth) after a real break, not between phrases.
+// Reset latency after a real pause, avoiding repeated underrun-driven growth between phrases.
 static constexpr int kIdleSecondsBeforeLatencyReset = 30;
 
-// A MIDI or control change handed from a non-RT thread to the audio callback,
-// which applies it to the synth just before rendering. Trivially copyable so it
-// can travel through SpscRingBuffer.
+// Copyable events cross from producers to the audio callback, which applies them before rendering.
 struct SynthEvent {
     enum Type : uint8_t { NoteOn, NoteOff, CC, ProgramSelect, Gain, Reverb, ReverbOn };
     Type type;
@@ -69,12 +57,7 @@ struct CachedPreset {
     std::string name;
 };
 
-// Threading model: FluidSynth runs with its internal API lock disabled and the
-// audio callback is the only thread that touches the synth during playback.
-// Notes, CCs and effect changes are queued (pushEvent) and applied at the top
-// of the next callback. Heavy operations that must run elsewhere (SoundFont
-// loading, sample-rate changes, teardown) take synthMutex; the callback only
-// try_locks it and outputs silence for that buffer instead of blocking.
+// Only the callback renders; queue controls. Heavy synth work holds synthMutex; callbacks try_lock and emit silence on contention.
 class PyanoEngine : public oboe::AudioStreamCallback {
 public:
     fluid_settings_t* settings = nullptr;
@@ -82,41 +65,33 @@ public:
     oboe::ManagedStream stream;
     std::mutex synthMutex;
 
-    // Event queue: any number of producers serialized by producerMutex, one
-    // consumer (the RT callback) that never takes a lock.
+    // Event queue: any number of producers serialized by producerMutex, one consumer (the RT callback) that never takes a lock.
     static constexpr size_t kEventQueueCapacity = 1024;
-    // Slots only NoteOff/ProgramSelect/ReverbOn may use, so a backlog of notes or
-    // pedal CCs (e.g. while a SoundFont loads) can't crowd out a NoteOff.
+    // Slots only NoteOff/ProgramSelect/ReverbOn may use, so a backlog of notes or pedal CCs (e.g. while a SoundFont loads) can't crowd out a NoteOff.
     static constexpr size_t kReservedEventSlots = 256;
     SpscRingBuffer<SynthEvent> eventQueue{kEventQueueCapacity};
     std::mutex producerMutex;
     // Set when a NoteOff had to be dropped anyway; the callback silences all notes.
     std::atomic<bool> allNotesOffPending{false};
-    // Set when the queue may hold stale events (stream was down, or the synth was
-    // busy loading); the next drain skips NoteOns so they don't all fire late at once.
+    // Skip stale queued NoteOns after downtime or synth loading so they do not sound late.
     std::atomic<bool> discardQueuedNoteOns{false};
 
-    // Preset lists captured at load time so the UI never has to walk a
-    // SoundFont while the audio thread owns the synth. Keyed by sfId.
+    // Preset lists captured at load time so the UI never has to walk a SoundFont while the audio thread owns the synth. Keyed by sfId.
     std::mutex presetCacheMutex;
     std::map<int, std::vector<CachedPreset>> presetCache;
     int sampleRate = 48000;
-    // Output buffer size in frames (the latency knob). 0 = automatic: start at
-    // two bursts and let latencyTuner grow it one burst per underrun.
+    // Output buffer size in frames (the latency knob). 0 = automatic: start at two bursts and let latencyTuner grow it one burst per underrun.
     int requestedBufferFrames = 0;
     int audioDeviceId = oboe::kUnspecified;
     std::unique_ptr<oboe::LatencyTuner> latencyTuner;   // non-null only in automatic mode
-    // Serializes stream open/close between the UI thread (device/buffer changes) and
-    // Oboe's error thread (restart after disconnect). Never taken on the RT thread.
+    // Serializes UI changes and Oboe error-thread restarts; the RT thread never takes this lock.
     std::mutex streamMutex;
     std::atomic<bool> shuttingDown{false};
 
     // Output level monitoring (peak level per callback)
     std::atomic<float> peakLevel{0.0f};
 
-    // Glitch diagnostics, written by the RT callback and polled by the UI thread.
-    // xruns accumulate across stream reopens; max callback time and peak voices
-    // are reset on each read so every poll reports the worst case since the last.
+    // RT-written, UI-polled diagnostics: xruns survive stream reopens; callback-time and voice peaks reset on read.
     std::atomic<int> totalXruns{0};
     int streamXrunsSeen = 0;                    // RT-only: xruns already counted for this stream
     std::atomic<int> streamBufferFrames{0};
@@ -133,18 +108,13 @@ public:
 
     HeapWarmer heapWarmer;                      // keeps swapped-out samples off the RT path
 
-    // The cores with the highest max frequency (big cluster). The callback thread
-    // pins itself there: the scheduler otherwise keeps it on little cores, where a
-    // pedaled passage on a multi-layer piano runs past the 2 ms deadline.
+    // Pin callbacks to the big CPU cluster so pedaled passages can meet the 2 ms deadline.
     cpu_set_t performanceCores;
     int performanceCoreCount = 0;
     int framesUntilPinCheck = 0;                // RT-only; 0 = check on the next callback
     std::atomic<int> pinResult{1};              // 1 = not tried, 0 = pinned, else errno
 
-    // Idle pause: Android counts a running media stream as "music playing" even when
-    // it is silent, and after 20 h of that above the safe level it drops the volume
-    // and asks for the hearing warning again. Pausing while nobody plays keeps that
-    // clock to real playing time. Anything that makes sound resumes it.
+    // Pause silent output to avoid Android counting idle time toward its 20-hour safe-volume warning; sound sources resume it.
     std::atomic<bool> pausedForIdle{false};
     std::atomic<int64_t> resumeRequestedNs{0};  // set on resume; the first callback clears it
     std::atomic<int> lastResumeCallMicros{0};   // requestStart() duration
@@ -175,14 +145,12 @@ public:
         LOGI("Performance cores: %d of %ld (max %ld kHz)", performanceCoreCount, cpus, best);
     }
 
-    // Recording ring buffer: allocated once, reused across recordings
-    // ~60s of stereo float at 48kHz = 48000 * 2 * 60 = 5,760,000 floats (~32MB after power-of-2 rounding)
+    // Reuse a power-of-two ring holding about 60 seconds of stereo float PCM at 48 kHz (~32 MB).
     static constexpr size_t kRecordingBufferFloats = 48000 * 2 * 60;
     SpscRingBuffer<float>* recordingBuffer = nullptr;
     std::atomic<bool> recordingActive{false};
 
-    // Metronome state. Control fields are atomic (UI/RT thread). RT-only state
-    // (sample counter, pending noteoff) is touched only by the RT audio thread.
+    // Metronome state. Control fields are atomic (UI/RT thread). RT-only state (sample counter, pending noteoff) is touched only by the RT audio thread.
     std::atomic<bool> metronomeRunning{false};
     std::atomic<int> metronomeBpm{120};
     std::atomic<int> metronomeTimeSigBeats{4};
@@ -199,8 +167,7 @@ public:
     int metronomePendingNoteOff = -1;           // note number awaiting noteoff, -1 = none
     int metronomeNoteOffCountdown = 0;          // frames remaining before noteoff
 
-    // requestedSampleRate should be the device's native output rate so the stream
-    // opens without resampling; startAudio() corrects it if the device differs.
+    // requestedSampleRate should be the device's native output rate so the stream opens without resampling; startAudio() corrects it if the device differs.
     bool create(int requestedSampleRate, int bufferFrames) {
         sampleRate = requestedSampleRate;
         requestedBufferFrames = bufferFrames;
@@ -213,13 +180,11 @@ public:
 
         fluid_settings_setnum(settings, "synth.sample-rate", (double)sampleRate);
         fluid_settings_setint(settings, "synth.audio-channels", 1); // 1 stereo pair
-        // Caps worst-case render cost (sustain pedal + stereo samples stack voices
-        // fast); FluidSynth steals the quietest releasing voices beyond this.
+        // Caps worst-case render cost (sustain pedal + stereo samples stack voices fast); FluidSynth steals the quietest releasing voices beyond this.
         fluid_settings_setint(settings, "synth.polyphony", kMaxPolyphony);
         // Chorus is not offered; keeping it inactive skips its processing entirely.
         fluid_settings_setint(settings, "synth.chorus.active", 0);
-        // Only the audio callback (or a holder of synthMutex) calls into the synth,
-        // so FluidSynth's own API mutex would only add contention with the RT thread.
+        // Only the audio callback (or a holder of synthMutex) calls into the synth, so FluidSynth's own API mutex would only add contention with the RT thread.
         fluid_settings_setint(settings, "synth.threadsafe-api", 0);
 
         synth = new_fluid_synth(settings);
@@ -261,9 +226,7 @@ public:
         heapWarmer.setIdle(false);
         resumeRequestedNs.store(0, std::memory_order_relaxed);
         discardQueuedNoteOns.store(true, std::memory_order_relaxed);
-        // Sample rate and callback size are deliberately left unset: the device's
-        // native rate and burst-sized callbacks are what keep the stream on the
-        // low-latency (MMAP / fast mixer) path with evenly spaced callbacks.
+        // Leave rate and callback size native to retain the low-latency MMAP/fast-mixer path and burst-sized callbacks.
         oboe::AudioStreamBuilder builder;
         builder.setDirection(oboe::Direction::Output)
                ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
@@ -281,8 +244,7 @@ public:
             return false;
         }
 
-        // FluidSynth can't render above 96 kHz (it clamps, which would play sharp).
-        // For such devices let Oboe resample from 48 kHz instead.
+        // FluidSynth can't render above 96 kHz (it clamps, which would play sharp). For such devices let Oboe resample from 48 kHz instead.
         if (stream->getSampleRate() > kMaxSynthSampleRate) {
             LOGI("Device rate %d exceeds synth max; reopening at 48000 with resampling",
                  stream->getSampleRate());
@@ -296,8 +258,7 @@ public:
             }
         }
 
-        // Render at whatever rate the device gave us. Done before start, so no
-        // callback is running; voices are reset by the rate change.
+        // Render at whatever rate the device gave us. Done before start, so no callback is running; voices are reset by the rate change.
         int actualRate = stream->getSampleRate();
         if (actualRate != sampleRate && synth) {
             LOGI("Adjusting FluidSynth sample rate from %d to %d", sampleRate, actualRate);
@@ -319,8 +280,7 @@ public:
             latencyTuner = std::make_unique<oboe::LatencyTuner>(*stream, maxFrames);
         }
 
-        // Lets Android raise the clock / move the callback thread to a big core when
-        // the render time climbs (e.g. a pedaled chord), instead of after it underruns.
+        // Request clock/core boosts as rendering load rises, before underruns occur.
         stream->setPerformanceHintEnabled(true);
 
         result = stream->requestStart();
@@ -369,9 +329,7 @@ public:
         }
     }
 
-    // Only one instrument SoundFont stays resident: loading a new one unloads the
-    // previous one (each can be 100+ MB, all samples in RAM). The metronome's drum
-    // SF2 is never unloaded and is reused if the user picks the same file.
+    // Unload the previous instrument font to limit resident samples; retain the metronome font and reuse it when selected.
     int loadSoundFont(const char* path) {
         std::lock_guard<std::mutex> lock(synthMutex);
         if (!synth) return -1;
@@ -387,16 +345,12 @@ public:
             }
         }
         if (userSfId >= 0 && userSfId != sfId && userSfId != metronomeDrumSfId) {
-            // reset=1 re-resolves every channel's preset against the remaining fonts
-            // so no channel keeps pointing into the one being removed. FluidSynth
-            // defers freeing it until voices still sounding from it have ended.
+            // Reset presets against remaining fonts; FluidSynth defers freeing the old font until its sounding voices end.
             fluid_synth_sfunload(synth, userSfId, 1);
             LOGI("Unloaded previous soundfont id=%d", userSfId);
         }
         userSfId = sfId;
-        // Re-assert channel 9 routing to the drum soundfont in case this
-        // new SF2 contains bank 128 presets that FluidSynth would otherwise
-        // pick up for the drum channel.
+        // Restore channel 9 to the drum font after loading an SF2 that might supply its own bank 128.
         if (metronomeDrumSfId >= 0) {
             fluid_synth_program_select(synth, kMetronomeChannel, metronomeDrumSfId,
                                        kMetronomeDrumBank, kMetronomeDrumPreset);
@@ -427,9 +381,7 @@ public:
         bool essential = ev.type == SynthEvent::NoteOff || ev.type == SynthEvent::ProgramSelect ||
                          ev.type == SynthEvent::ReverbOn;
         if (pausedForIdle.load(std::memory_order_acquire)) {
-            // No callback is draining the queue, so apply the backlog here; otherwise a
-            // burst of CCs (e.g. a keyboard sending its state when switched on) fills it
-            // and the note that wakes the stream is dropped.
+            // Drain queued controls here while output is paused so a CC backlog cannot crowd out the note that wakes it.
             std::unique_lock<std::mutex> synthLock(synthMutex, std::try_to_lock);
             if (synthLock.owns_lock() && synth) drainEvents();
         }
@@ -500,8 +452,7 @@ public:
         pushEvent({SynthEvent::ReverbOn, {on ? 1 : 0, 0, 0, 0}, {}});
     }
 
-    // The callback, or pushEvent while paused for idle; synthMutex held either way,
-    // which keeps it a single consumer.
+    // The callback, or pushEvent while paused for idle; synthMutex held either way, which keeps it a single consumer.
     void drainEvents() {
         bool skipNoteOns = discardQueuedNoteOns.exchange(false, std::memory_order_relaxed);
         SynthEvent ev;
@@ -536,10 +487,7 @@ public:
         }
     }
 
-    // Returns preset count and fills arrays with bank, program, name for each.
-    // Name pointers stay valid until destroy(): cache entries are never replaced
-    // because FluidSynth never reuses an sfId, and are kept after the SoundFont is
-    // unloaded (names only, a few KB) so a concurrent load can't free them mid-read.
+    // Preset names remain valid until destroy: cache entries survive font unload and sfIds are never reused.
     int getPresets(int sfId, int* banks, int* programs, const char** names, int maxPresets) {
         std::lock_guard<std::mutex> lock(presetCacheMutex);
         auto it = presetCache.find(sfId);
@@ -665,9 +613,7 @@ public:
         metronomeVolume.store(v, std::memory_order_relaxed);
     }
 
-    // Load a dedicated drum-kit soundfont for the metronome and route channel 9
-    // to its bank 128 preset 0 (GM standard drum kit). Safe to call multiple
-    // times; subsequent calls reload and re-route.
+    // Load/reload the metronome font and route channel 9 to bank 128 preset 0.
     int loadMetronomeDrumKit(const char* path) {
         std::lock_guard<std::mutex> lock(synthMutex);
         if (!synth) return -1;
@@ -695,9 +641,7 @@ public:
         return metronomeCurrentBeat.load(std::memory_order_relaxed);
     }
 
-    // Schedule metronome noteon/noteoff events on channel 9. Called from the RT
-    // audio callback BEFORE fluid_synth_write_float so the events land in the
-    // same render pass. No allocations, no mutex, no logging.
+    // Schedule channel 9 before rendering on the RT callback; no allocations, locks, or logging.
     void processMetronomeTick(int numFrames) {
         bool running = metronomeRunning.load(std::memory_order_acquire);
         if (!running) {
@@ -761,9 +705,7 @@ public:
         metronomeCurrentBeat.store(beat, std::memory_order_relaxed);
     }
 
-    // getXRunCount/getBufferSizeInFrames take a shared lock inside Oboe that is only
-    // contended by close(), so they don't block during playback. steady_clock is a
-    // vDSO clock_gettime call. Only atomics are written.
+    // Oboe diagnostics contend only with close(); steady_clock uses vDSO; this callback writes only atomics.
     void recordCallbackStats(oboe::AudioStream* audioStream, int32_t numFrames,
                              std::chrono::steady_clock::time_point callbackStart) {
         auto xruns = audioStream->getXRunCount();
@@ -786,9 +728,7 @@ public:
         }
     }
 
-    // After kIdleSecondsBeforeLatencyReset of silence, asks the tuner to drop the
-    // buffer back to its minimum; it grows again only if underruns recur. Once per
-    // pause: the next sounding voice re-arms it. RT thread only.
+    // RT-only: reset latency once per silent pause, rearming when a voice sounds; underruns can grow it again.
     void relaxLatencyWhenIdle(oboe::AudioStream* audioStream, int32_t numFrames, int voices) {
         if (voices != 0) {
             idleFrames = 0;
@@ -816,15 +756,12 @@ public:
         }
         auto* output = static_cast<float*>(audioData);
 
-        // Never wait for a non-RT thread: if a SoundFont load (or teardown) holds
-        // the synth, emit silence for this buffer and leave queued events for later.
+        // Never wait for a non-RT thread: if a SoundFont load (or teardown) holds the synth, emit silence for this buffer and leave queued events for later.
         std::unique_lock<std::mutex> lock(synthMutex, std::try_to_lock);
         int voices = -1;  // unknown unless we render
         framesUntilPinCheck -= numFrames;
         if (framesUntilPinCheck <= 0 && performanceCoreCount > 0) {
-            // Rechecked every second: moving the app between cpusets (e.g. the screen
-            // turning off puts it in "background", cores 0-5) resets the thread's
-            // affinity, and pinning fails (EINVAL) while the cpuset has no big core.
+            // Recheck affinity each second: Android cpuset changes reset it and EINVAL signals no allowed big core.
             framesUntilPinCheck = sampleRate;
             int cpu = sched_getcpu();
             if (cpu < 0 || !CPU_ISSET(cpu, &performanceCores)) {
@@ -842,8 +779,7 @@ public:
         if (synth && lock.owns_lock()) {
             drainEvents();
 
-            // Schedule metronome noteon/noteoff before render so they land
-            // in this buffer's audio output
+            // Schedule metronome noteon/noteoff before render so they land in this buffer's audio output
             processMetronomeTick(numFrames);
 
             // FluidSynth renders interleaved stereo float samples, overwriting output
@@ -892,8 +828,7 @@ public:
         LOGE("Audio stream error: %s", oboe::convertToText(error));
     }
 
-    // Runs on Oboe's error thread (e.g. output unplugged). Restart only if this is
-    // still our current stream: the UI thread may have already replaced it.
+    // Runs on Oboe's error thread (e.g. output unplugged). Restart only if this is still our current stream: the UI thread may have already replaced it.
     void onErrorAfterClose(oboe::AudioStream* closedStream, oboe::Result error) override {
         LOGE("Audio stream closed with error: %s", oboe::convertToText(error));
         if (shuttingDown.load()) return;
@@ -999,15 +934,7 @@ float engine_get_peak_level(void* ptr) {
     return engine ? engine->getPeakLevel() : 0.0f;
 }
 
-// Fills out[17]: {totalXruns, bufferSizeFrames, burstFrames, lastCallbackFrames,
-// maxCallbackMicros (since last call), peakActiveVoices (since last call), sampleRate,
-// droppedEvents, lockedOutCallbacks, maxCallbackCpu (core of the slowest callback),
-// slowCallbacks (total over 80% of the callback period), heapPagesRestored (swapped-out
-// pages the warmer read back), latencyResets (automatic buffer dropped back to minimum),
-// pinResult (callback thread on performance cores: 0 = pinned, 1 = not tried, else errno),
-// pausedForIdle (0/1), lastResumeCallMicros (requestStart duration), lastResumeFirstCallbackMicros
-// (resume request to first callback)}.
-// Returns the number of values written.
+// Writes 17 diagnostics in the order documented in docs/native-audio.md; returns the number written.
 int engine_get_audio_stats(void* ptr, int* out, int maxValues) {
     auto* engine = static_cast<PyanoEngine*>(ptr);
     if (!engine || maxValues < PyanoEngine::kAudioStatsCount) return 0;

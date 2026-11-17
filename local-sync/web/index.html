@@ -1,0 +1,20 @@
+<!-- Concern: hosts the local music player | Non-concern: upload controls | IO: (recordings) -> playback page -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pyano · Listening room</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/player.js"></script>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">PYANO / LOCAL LIBRARY</p><h1>A place for your playing.</h1>
+      <p>Record on your tablet. Send the takes you want to keep. Listen here.</p></header>
+    <div class="toolbar"><h2>Recordings</h2><button id="refresh">Refresh library</button></div>
+    <p id="status" role="status">Loading recordings…</p>
+    <section id="recordings" aria-label="Recordings"></section>
+  </main>
+</body>
+</html>

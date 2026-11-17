@@ -1,4 +1,4 @@
-// RecorderTab: Audio recording controls, WAV playback, file management. NOT concerned with synth engine or navigation.
+// Concern: renders recording and file controls | Non-concern: audio capture | IO: (recording state) -> recording actions
 package com.pyano.ui
 
 import android.media.MediaPlayer
@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
@@ -43,6 +44,8 @@ fun RecorderTab(viewModel: PyanoViewModel) {
     val durationSec by viewModel.recordingDurationSec.collectAsState()
     val recordings by viewModel.savedRecordings.collectAsState()
     val outputLevel by viewModel.outputLevel.collectAsState()
+    val syncBusy by viewModel.syncBusy.collectAsState()
+    val syncStatus by viewModel.syncStatus.collectAsState()
     val masteringRecording by viewModel.masteringRecording.collectAsState()
 
     // Refresh recordings on first composition
@@ -69,10 +72,19 @@ fun RecorderTab(viewModel: PyanoViewModel) {
             durationSec = durationSec,
             outputLevel = outputLevel,
             onRecord = { viewModel.startAudioRecording() },
+            enabled = !syncBusy,
             onStop = { viewModel.stopAudioRecording() }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
+
+        LocalSyncPanel(
+            endpoint = viewModel.localSyncEndpoint,
+            status = syncStatus,
+            busy = syncBusy,
+            onConfigure = viewModel::configureLocalSync
+        )
+        Spacer(modifier = Modifier.height(12.dp))
 
         // --- Saved Recordings ---
         RecordingsListCard(
@@ -80,6 +92,8 @@ fun RecorderTab(viewModel: PyanoViewModel) {
             onRename = { path, newName -> viewModel.renameRecording(path, newName) },
             onDelete = { viewModel.deleteRecording(it) },
             onMaster = { viewModel.openMastering(it) },
+            onUpload = viewModel::uploadRecording,
+            enabled = !syncBusy && !isRecording,
             modifier = Modifier.weight(1f)
         )
     }
@@ -91,6 +105,7 @@ private fun RecordControlCard(
     durationSec: Int,
     outputLevel: Float,
     onRecord: () -> Unit,
+    enabled: Boolean,
     onStop: () -> Unit
 ) {
     Card(
@@ -181,6 +196,7 @@ private fun RecordControlCard(
             } else {
                 FilledIconButton(
                     onClick = onRecord,
+                    enabled = enabled,
                     modifier = Modifier.size(72.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.error
@@ -207,6 +223,8 @@ private fun RecordingsListCard(
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onMaster: (RecordingInfo) -> Unit,
+    onUpload: (RecordingInfo) -> Unit,
+    enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -244,7 +262,9 @@ private fun RecordingsListCard(
                             recording = recording,
                             onRename = { newName -> onRename(recording.path, newName) },
                             onDelete = { onDelete(recording.path) },
-                            onMaster = { onMaster(recording) }
+                            onMaster = { onMaster(recording) },
+                            onUpload = { onUpload(recording) },
+                            enabled = enabled
                         )
                     }
                 }
@@ -258,7 +278,9 @@ private fun RecordingRow(
     recording: RecordingInfo,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
-    onMaster: () -> Unit
+    onMaster: () -> Unit,
+    onUpload: () -> Unit,
+    enabled: Boolean
 ) {
     val context = LocalContext.current
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -357,8 +379,12 @@ private fun RecordingRow(
             }
         }
 
+        IconButton(onClick = onUpload, enabled = enabled) {
+            Icon(Icons.Default.CloudUpload, contentDescription = "Upload compressed audio and MIDI")
+        }
+
         // Master button
-        IconButton(onClick = onMaster) {
+        IconButton(onClick = onMaster, enabled = enabled) {
             Icon(
                 Icons.Default.Settings,
                 contentDescription = "Master",
@@ -367,7 +393,7 @@ private fun RecordingRow(
         }
 
         // Rename button
-        IconButton(onClick = {
+        IconButton(enabled = enabled, onClick = {
             renameText = recording.name
             showRenameDialog = true
         }) {
@@ -405,7 +431,7 @@ private fun RecordingRow(
         }
 
         // Delete button
-        IconButton(onClick = { showDeleteDialog = true }) {
+        IconButton(enabled = enabled, onClick = { showDeleteDialog = true }) {
             Icon(
                 Icons.Default.Delete,
                 contentDescription = "Delete",

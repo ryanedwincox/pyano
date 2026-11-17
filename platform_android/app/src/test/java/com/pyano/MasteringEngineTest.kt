@@ -1,7 +1,4 @@
-// Role: JVM unit tests for the pure DSP math in audio/MasteringEngine
-// (dB<->linear, BiquadFilter magnitude, Limiter ceiling, Compressor gain reduction).
-// NOT concerned with: AudioTrack playback, file I/O, WAV export, or UI state — only the
-// allocation-free math classes that run unchanged on a plain JVM.
+// Concern: tests mastering DSP math | Non-concern: AudioTrack playback | IO: (DSP inputs) -> assertions
 package com.pyano
 
 import com.pyano.audio.BiquadFilter
@@ -77,8 +74,7 @@ class MasteringEngineTest {
         val ceilingDb = -0.3f
         val limiter = Limiter(ceilingDb = ceilingDb, releaseMs = 50f, sampleRate = sampleRate)
         val ceilingLinear = dbToLinear(ceilingDb)
-        // Drive with a loud signal well above the ceiling for long enough to flush
-        // the lookahead delay line.
+        // Drive with a loud signal well above the ceiling for long enough to flush the lookahead delay line.
         var maxOut = 0f
         for (i in 0 until sampleRate) {
             val input = if (i % 2 == 0) 0.95f else -0.95f

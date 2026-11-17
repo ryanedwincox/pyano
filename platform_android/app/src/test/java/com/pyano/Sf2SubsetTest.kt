@@ -1,3 +1,4 @@
+// Concern: tests SoundFont extraction | Non-concern: audio rendering | IO: (SF2 fixtures) -> assertions
 package com.pyano
 
 import com.pyano.audio.Sf2Subset
@@ -40,11 +41,7 @@ class Sf2SubsetTest {
     /** Sample i is 10 points of value (i+1)*100 + point index, so copies are checkable. */
     private fun samplePoints(i: Int) = ShortArray(10) { ((i + 1) * 100 + it).toShort() }
 
-    /**
-     * Presets: "Piano" (bank 0 prog 0 -> inst 0 -> sample 4) and "Kit" (bank 128 prog 0 ->
-     * inst 1 with a global zone and zones: key 31 -> sample 0 (mono), keys 33-34 -> sample 1
-     * (left, linked to sample 2), key 60 -> sample 3).
-     */
+    /** Fixture: Piano uses sample 4; Kit maps key 31 to mono sample 0, keys 33–34 to linked samples 1/2, and key 60 to sample 3. */
     private fun buildSource(file: File) {
         val smpl = Le()
         val shdr = Le()

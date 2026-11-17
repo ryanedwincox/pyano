@@ -1,5 +1,4 @@
-// LoopStationTab: Loop station controls — BPM, layer management, record/play/overdub, transport.
-// NOT concerned with synth engine internals or navigation.
+// Concern: renders loop layer controls | Non-concern: synth implementation | IO: (loop state) -> transport actions
 package com.pyano.ui
 
 import androidx.compose.foundation.BorderStroke

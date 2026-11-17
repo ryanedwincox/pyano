@@ -1,4 +1,4 @@
-// MetronomeTab: Tempo control, beat indicator, tap tempo, time signature. NOT concerned with synth engine or navigation.
+// Concern: renders metronome controls | Non-concern: synth implementation | IO: (tempo state) -> metronome actions
 package com.pyano.ui
 
 import androidx.compose.animation.core.Spring
@@ -64,9 +64,7 @@ fun MetronomeTab(viewModel: PyanoViewModel) {
             ) {
                 SectionHeader("Beat")
                 Spacer(modifier = Modifier.height(8.dp))
-                // The beat indicator shows which beat just played.
-                // currentBeat from the engine is the NEXT beat (post-increment),
-                // so the beat that just played is (currentBeat - 1 + timeSig) % timeSig.
+                // The engine reports the next beat; display (currentBeat - 1 + timeSig) % timeSig as the beat just played.
                 val justPlayed = (currentBeat - 1 + timeSig) % timeSig
                 Row(
                     horizontalArrangement = Arrangement.Center,
@@ -200,8 +198,7 @@ fun MetronomeTab(viewModel: PyanoViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
                 ) {
-                    // Start/Stop button — matches the primary "selected chip" style
-                    // used by selector buttons on the Synth tab (filled primary).
+                    // Start/Stop button — matches the primary "selected chip" style used by selector buttons on the Synth tab (filled primary).
                     Button(
                         onClick = { viewModel.toggleMetronome() },
                         colors = ButtonDefaults.buttonColors(

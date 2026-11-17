@@ -1,3 +1,4 @@
+// Concern: configures Android packaging and tests | Non-concern: root plugin versions | IO: none
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -37,9 +38,7 @@ android {
         }
     }
 
-    // Release signing is sourced from the environment (CI/local), falling back to
-    // Gradle properties. NO secrets are committed; if no keystore is configured the
-    // release build is left unsigned rather than failing.
+    // Read signing secrets from environment or Gradle properties; leave releases unsigned when no keystore is configured.
     val keystorePath = System.getenv("PYANO_KEYSTORE")
         ?: project.findProperty("pyano.keystore") as String?
     val keystorePassword = System.getenv("PYANO_KEYSTORE_PASSWORD")
@@ -64,8 +63,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Only sign when a keystore is actually configured and present;
-            // otherwise the release build stays unsigned.
+            // Only sign when a keystore is actually configured and present; otherwise the release build stays unsigned.
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -73,8 +71,7 @@ android {
     }
 
     lint {
-        // Keep lint configured/visible but non-blocking so it never fails the build
-        // on pre-existing warnings. Tighten these once the warning backlog is clean.
+        // Keep lint configured/visible but non-blocking so it never fails the build on pre-existing warnings. Tighten these once the warning backlog is clean.
         abortOnError = false
         warningsAsErrors = false
         checkReleaseBuilds = false
@@ -100,11 +97,7 @@ android {
     }
 }
 
-// FluidSynthEngine calls System.loadLibrary("pyano-native") in its companion init,
-// which would throw on the plain JVM used for unit tests. We compile a tiny empty
-// stub shared library (no JNI symbols — tests never call native methods) and put it
-// on java.library.path so the class can be loaded/mocked. If no host C compiler is
-// present the stub is skipped; tests that need it skip via an Assume fallback.
+// Host tests load an empty native stub; without a host C compiler, native-dependent tests skip via Assume.
 val stubNativeDir = layout.buildDirectory.dir("test-native").get().asFile
 
 val buildTestNativeStub by tasks.registering {

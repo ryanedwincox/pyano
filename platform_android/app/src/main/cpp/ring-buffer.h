@@ -1,5 +1,4 @@
-// ring-buffer.h: Lock-free single-producer single-consumer ring buffer for RT audio capture and synth events.
-// NOT concerned with: multi-producer, multi-consumer, or resizable buffers.
+// Concern: buffers single-producer audio and events | Non-concern: multiple producers | IO: (items) -> ordered items
 #pragma once
 
 #include <atomic>
@@ -79,8 +78,7 @@ public:
         return capacity_ - (wi - ri);
     }
 
-    // Must only be called when no concurrent read/write is in progress (e.g., before
-    // setting recordingActive = true). Relaxed ordering is safe under this precondition.
+    // Reset only without concurrent reads/writes (before recordingActive); relaxed ordering relies on this precondition.
     void reset() {
         writeIndex_.store(0, std::memory_order_relaxed);
         readIndex_.store(0, std::memory_order_relaxed);

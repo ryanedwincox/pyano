@@ -1,5 +1,4 @@
-// MainActivity: Compose entry point — wires permissions, the foreground service, and the root UI to the ViewModel.
-// NOT concerned with: audio engine internals, MIDI parsing, or DSP.
+// Concern: hosts the Android UI and permissions | Non-concern: synth state ownership | IO: (activity lifecycle) -> Compose UI
 package com.pyano
 
 import android.Manifest
@@ -44,8 +43,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Shown over the lock screen: a key press wakes the tablet straight into Pyano
-        // (KioskController) while every other app stays behind the PIN.
+        // Shown over the lock screen: a key press wakes the tablet straight into Pyano (KioskController) while every other app stays behind the PIN.
         if (Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(true)
         } else {
@@ -78,8 +76,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        // Only stop the service when the user closes the last Pyano window, not on
-        // configuration changes (rotation, etc) or while a second instance remains.
+        // Only stop the service when the user closes the last Pyano window, not on configuration changes (rotation, etc) or while a second instance remains.
         if (pyano.activityDestroyed(isFinishing)) {
             PyanoAudioService.stop(this)
         }

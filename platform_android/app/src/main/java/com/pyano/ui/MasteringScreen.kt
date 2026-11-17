@@ -1,5 +1,4 @@
-// MasteringScreen: Full-screen mastering suite modal with 3-band EQ, compressor, limiter, meters, transport, export.
-// NOT concerned with: DSP implementation, recording, MIDI, or navigation.
+// Concern: renders the mastering workspace | Non-concern: DSP implementation | IO: (recording and settings) -> mastering actions
 package com.pyano.ui
 
 import android.util.Log

@@ -1,5 +1,4 @@
-// DevicesPanel: Shows the USB devices on the bus now and the connection history, to diagnose a dropped audio interface.
-// NOT concerned with: selecting outputs (SynthTab) or recording the events (DeviceDiagnostics).
+// Concern: displays device connection diagnostics | Non-concern: output selection | IO: (diagnostics) -> device UI
 package com.pyano.ui
 
 import androidx.compose.foundation.layout.*

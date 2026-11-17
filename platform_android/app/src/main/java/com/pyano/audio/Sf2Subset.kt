@@ -1,5 +1,4 @@
-// Sf2Subset: Writes a small SF2 holding one preset of a source SoundFont, cut down to chosen keys.
-// NOT concerned with: loading into the synth, choosing presets/keys, or metadata for the UI.
+// Concern: extracts selected SoundFont presets and keys | Non-concern: loading the synth | IO: (SF2 and selection) -> subset SF2
 package com.pyano.audio
 
 import java.io.ByteArrayOutputStream
@@ -8,13 +7,7 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Extracts one preset from an SF2, keeping only the zones (and samples) that sound for
- * [keys]. Used for the metronome: the GM drum kit's handful of click sounds is a few
- * hundred KB, while loading the whole GM SoundFont keeps ~150 MB of samples in RAM.
- *
- * Only 16-bit sample data is carried over (an sm24 chunk is dropped).
- */
+/** Keep selected preset/key zones and 16-bit samples; drop sm24. GM click subsets avoid ~150 MB resident sample data. */
 object Sf2Subset {
 
     private const val GEN_KEY_RANGE = 43

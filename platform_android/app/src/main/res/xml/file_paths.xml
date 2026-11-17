@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Concern: declares shareable recording paths | Non-concern: file upload | IO: none -->
 <paths>
     <external-path name="downloads" path="Download/Pyano/" />
 </paths>

@@ -1,0 +1,41 @@
+# Concern: bounds repository annotations | Non-concern: comment budgets | IO: none
+[rules]
+max_annotation_length = 160
+
+[display]
+hidden = true
+include_tests = true
+
+[languages.kotlin]
+extensions = [".kt", ".kts"]
+comment = "//"
+
+[languages.c]
+extensions = [".c", ".h", ".cpp"]
+comment = "//"
+block = ["/*", "*/"]
+
+[languages.xml]
+pattern = '(?s)^(?:<\?xml[^>]*>\s*)?<!-- (?P<annotation>Concern: .*?) -->'
+extensions = [".xml"]
+block = ["<!--", "-->"]
+
+[languages.cmake]
+extensions = [".cmake", ".txt"]
+comment = "#"
+
+[languages.properties]
+extensions = [".properties"]
+comment = "#"
+
+[languages.html]
+extensions = [".html"]
+block = ["<!--", "-->"]
+
+[languages.css]
+extensions = [".css"]
+block = ["/*", "*/"]
+
+[languages.javascript-module]
+extensions = [".mjs"]
+comment = "//"

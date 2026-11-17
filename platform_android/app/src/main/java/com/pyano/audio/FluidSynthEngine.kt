@@ -1,5 +1,4 @@
-// FluidSynthEngine: Kotlin binding over the native FluidSynth/Oboe engine — notes, effects, metronome, recording.
-// NOT concerned with: MIDI byte parsing, DSP math, or UI state.
+// Concern: exposes the native synth to Kotlin | Non-concern: MIDI byte parsing | IO: (engine commands) -> native results
 package com.pyano.audio
 
 import android.content.Context
@@ -9,10 +8,7 @@ import java.io.InputStream
 
 data class SfPreset(val bank: Int, val program: Int, val name: String)
 
-/**
- * Output-stream health snapshot. [maxCallbackMicros] and [peakVoices] are the worst
- * values since the previous [FluidSynthEngine.getAudioStats] call.
- */
+/** Output-stream health snapshot. [maxCallbackMicros] and [peakVoices] are the worst values since the previous [FluidSynthEngine.getAudioStats] call. */
 data class AudioStats(
     val xruns: Int,
     val bufferFrames: Int,
@@ -51,6 +47,7 @@ data class AudioStats(
 }
 
 class FluidSynthEngine {
+    val midiCapture = MidiCapture()
     private var enginePtr: Long = 0
     var soundFontId: Int = -1
         private set
@@ -94,20 +91,38 @@ class FluidSynthEngine {
         return soundFontId
     }
 
+    @Synchronized
     fun programSelect(channel: Int, sfId: Int, bank: Int, preset: Int) {
-        if (enginePtr != 0L) nativeProgramSelect(enginePtr, channel, sfId, bank, preset)
+        if (enginePtr != 0L) {
+            nativeProgramSelect(enginePtr, channel, sfId, bank, preset)
+            midiCapture.record(0xB0 or channel, 0, (bank shr 7) and 127)
+            midiCapture.record(0xB0 or channel, 32, bank and 127)
+            midiCapture.record(0xC0 or channel, preset)
+        }
     }
 
+    @Synchronized
     fun noteOn(channel: Int, note: Int, velocity: Int) {
-        if (enginePtr != 0L) nativeNoteOn(enginePtr, channel, note, velocity)
+        if (enginePtr != 0L) {
+            nativeNoteOn(enginePtr, channel, note, velocity)
+            midiCapture.record(0x90 or channel, note, velocity)
+        }
     }
 
+    @Synchronized
     fun noteOff(channel: Int, note: Int) {
-        if (enginePtr != 0L) nativeNoteOff(enginePtr, channel, note)
+        if (enginePtr != 0L) {
+            nativeNoteOff(enginePtr, channel, note)
+            midiCapture.record(0x80 or channel, note, 0)
+        }
     }
 
+    @Synchronized
     fun cc(channel: Int, ctrl: Int, value: Int) {
-        if (enginePtr != 0L) nativeCC(enginePtr, channel, ctrl, value)
+        if (enginePtr != 0L) {
+            nativeCC(enginePtr, channel, ctrl, value)
+            midiCapture.record(0xB0 or channel, ctrl, value)
+        }
     }
 
     fun setGain(gain: Float) {

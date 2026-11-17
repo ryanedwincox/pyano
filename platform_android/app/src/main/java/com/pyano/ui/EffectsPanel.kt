@@ -1,5 +1,4 @@
-// EffectsPanel: Compose UI for reverb/gain/buffer effect controls plus shared slider/meter widgets.
-// NOT concerned with: applying effects to audio, DSP math, or engine state ownership.
+// Concern: renders synth effect controls | Non-concern: DSP processing | IO: (effect settings) -> control actions
 package com.pyano.ui
 
 import androidx.compose.foundation.layout.*

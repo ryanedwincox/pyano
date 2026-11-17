@@ -1,3 +1,4 @@
+<!-- Concern: draws the in-app logo | Non-concern: launcher icon composition | IO: none -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="40dp"
     android:height="40dp"

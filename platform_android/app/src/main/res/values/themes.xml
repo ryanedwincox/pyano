@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Concern: sets window style | Non-concern: Compose colors | IO: none -->
 <resources>
     <style name="Theme.Pyano" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>

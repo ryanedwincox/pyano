@@ -1,5 +1,4 @@
-// native-lib.c: JNI bridge — marshals FluidSynthEngine external calls to the C++ PyanoEngine C wrappers.
-// NOT concerned with: audio rendering, DSP, or FluidSynth/Oboe internals (those live in audio-engine.cpp).
+// Concern: bridges Kotlin calls to the native engine | Non-concern: audio rendering | IO: (JNI arguments) -> engine results
 #include <jni.h>
 #include <stdio.h>
 #include <android/log.h>
@@ -7,8 +6,7 @@
 #define LOG_TAG "Pyano"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// Forward declarations for C++ engine (defined in audio-engine.cpp)
-// We use opaque pointer and C wrapper functions
+// Forward declarations for C++ engine (defined in audio-engine.cpp) We use opaque pointer and C wrapper functions
 
 // The C++ PyanoEngine is accessed via these wrappers
 #ifdef __cplusplus

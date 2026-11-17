@@ -1,5 +1,4 @@
-// PyanoViewModel: Central app state holder — owns the audio engine, MIDI, metronome, loop, and recording UI state.
-// NOT concerned with: low-level DSP, JNI bindings, or Compose rendering.
+// Concern: coordinates workstation state | Non-concern: DSP implementation | IO: (user and device events) -> app state
 package com.pyano
 
 import android.app.Application
@@ -27,17 +26,17 @@ import com.pyano.audio.SfPreset
 import com.pyano.midi.MidiDeviceManager
 import com.pyano.midi.MidiEventHandler
 import com.pyano.midi.MidiRecordingListener
+import com.pyano.sync.LocalSyncClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class AudioOutput(val id: Int, val name: String, val type: Int) {
-    /**
-     * Stable identifier used to remember a chosen output across reconnects and reboots.
-     * AudioDeviceInfo.id is reassigned on every enumeration, so we key by type+name instead.
-     * The synthetic "Default" entry (id=0) gets a fixed key so it's also stable.
-     */
+    /** Use type+name across reconnects; Android reassigns device IDs, while the synthetic Default entry has a fixed key. */
     val preferredKey: String
         get() = if (id == 0) "default" else "$type|$name"
 }
@@ -52,8 +51,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         private const val AUDIO_STATS_LOAD_WARN = 0.7f
         private const val DEFAULT_SF = "FluidR3_GM.sf2"
         private const val PREFS_NAME = "pyano_settings"
-        // Per-channel reverb send forced after each program change so reverb
-        // behaves consistently across instruments (see applyChannelSendDefaults).
+        // Per-channel reverb send forced after each program change so reverb behaves consistently across instruments (see applyChannelSendDefaults).
         private const val REVERB_SEND_DEFAULT = 96
         private const val CC_REVERB_SEND = 91
         private const val CC_CHORUS_SEND = 93
@@ -134,8 +132,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _gain = MutableStateFlow(prefs.getFloat("gain", 3.0f))
     val gain = _gain.asStateFlow()
 
-    // Output buffer size in frames; 0 = automatic (grows only on underruns). New pref
-    // key: the old "bufferSize" meant frames-per-callback, which is no longer set.
+    // Buffer frames, 0 = automatic; the old bufferSize key meant callback frames and must not be reused.
     private val _bufferSize = MutableStateFlow(prefs.getInt("bufferFrames", 0))
     val bufferSize = _bufferSize.asStateFlow()
 
@@ -173,8 +170,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _metronomeVolume = MutableStateFlow(prefs.getFloat("metronomeVolume", 1.0f))
     val metronomeVolume = _metronomeVolume.asStateFlow()
 
-    // GM percussion note pairs: downbeat / subbeat. Index into this list is
-    // persisted as metronomeClickType so the dropdown stays stable across updates.
+    // GM percussion note pairs: downbeat / subbeat. Index into this list is persisted as metronomeClickType so the dropdown stays stable across updates.
     data class MetronomeSound(val name: String, val downbeatNote: Int, val subbeatNote: Int)
     val metronomeSounds = listOf(
         MetronomeSound("Metronome", 34, 33),   // Metronome Bell / Click
@@ -229,6 +225,48 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _loopLayerNames = MutableStateFlow(List(LoopEngine.MAX_LAYERS) { "Layer ${it + 1}" })
     val loopLayerNames = _loopLayerNames.asStateFlow()
 
+    private val _syncStatus = MutableStateFlow("Configure a local server to upload selected takes")
+    val syncStatus = _syncStatus.asStateFlow()
+    private val _syncBusy = MutableStateFlow(false)
+    val syncBusy = _syncBusy.asStateFlow()
+    private var syncEndpoint = prefs.getString("syncEndpoint", "http://127.0.0.1:8765").orEmpty()
+    private var syncToken = ""
+    private var finishingRecording = false
+    val localSyncEndpoint get() = syncEndpoint
+
+    fun configureLocalSync(endpoint: String, token: String) {
+        if (_syncBusy.value) return
+        syncEndpoint = endpoint.trim()
+        syncToken = token.trim()
+        prefs.edit().putString("syncEndpoint", syncEndpoint).apply()
+        _syncStatus.value = "Local server configured; select a take to upload"
+    }
+
+    fun uploadRecording(recording: RecordingInfo) {
+        if (_syncBusy.value || _isAudioRecording.value) return
+        if (syncToken.isBlank()) {
+            _syncStatus.value = "Enter the server device token first"
+            return
+        }
+        _syncBusy.value = true
+        _syncStatus.value = "Compressing and uploading ${recording.name}…"
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    LocalSyncClient(getApplication<Application>().cacheDir)
+                        .upload(java.io.File(recording.path), syncEndpoint, syncToken)
+                }
+                _syncStatus.value = "Uploaded ${recording.name}; refresh the local player"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _syncStatus.value = e.message ?: "Upload failed; tap Upload to retry"
+            } finally {
+                _syncBusy.value = false
+            }
+        }
+    }
+
     // --- Audio Recorder ---
     val audioRecorder = AudioRecorder(engine, application)
 
@@ -280,9 +318,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Load the dedicated metronome drum kit (FluidR3_GM.sf2 bank 128 preset 0)
-        // BEFORE any piano soundfont so channel 9 routing is stable. Bundled in
-        // assets; idempotent copy.
+        // Copy the bundled GM kit idempotently and load bank 128 preset 0 before piano fonts to stabilize channel 9.
         val gmPath = engine.copySoundFontFromAssets(getApplication(), DEFAULT_SF)
         if (gmPath != null) {
             val kitPath = metronomeKitPath(java.io.File(gmPath))
@@ -340,9 +376,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
         _isLoading.value = false
 
-        // Populate the soundfont list (and derived favorites) so the Synth tab
-        // shows them on first open — MainActivity only rescans after a
-        // permission grant, which doesn't fire when permission is already held.
+        // Scan on startup too: an already-granted permission does not trigger MainActivity to refresh the list.
         scanSoundFonts()
 
         // Set up MIDI device monitoring
@@ -352,9 +386,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             onDeviceAdded = { info ->
                 diagnostics.record(DiagEvent.Kind.Connected, "MIDI input added: ${midiManager.getDeviceName(info)}")
                 refreshMidiDevices()
-                // Sticky reconnect: if nothing is currently bound, and either the new
-                // device matches our remembered one or we have no remembered device,
-                // bind it. Never yank an already-active connection.
+                // Bind a matching remembered device (or any device if none remembered) only when no connection is active.
                 if (_selectedMidiDevice.value == null) {
                     val name = midiManager.getDeviceName(info)
                     if (savedMidiDeviceName == null || savedMidiDeviceName == name) {
@@ -397,9 +429,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             var tick = 0
             var loggedXruns = 0
             while (true) {
-                // 20 Hz while anything on screen or time-critical needs it (loop auto-stop
-                // at the boundary); otherwise once a second, which is all the stats and
-                // idle-pause checks need with the screen off.
+                // Poll at 20 Hz for visible/time-critical work, including loop auto-stop; otherwise poll idle diagnostics at 1 Hz.
                 val fast = uiVisible || _metronomeRunning.value || loopEngine.isPlaying ||
                     loopEngine.isRecording || _isAudioRecording.value
                 if (fast) {
@@ -466,11 +496,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Log output-stream health. Logs immediately on new xruns or a callback that used
-     * more than [AUDIO_STATS_LOAD_WARN] of its time budget, otherwise only on [heartbeat].
-     * Returns the xrun total that has now been reported.
-     */
+    /** Log new xruns, callbacks over [AUDIO_STATS_LOAD_WARN], or [heartbeat]; return the reported xrun count. */
     private fun logAudioStats(loggedXruns: Int, heartbeat: Boolean): Int {
         val stats = engine.getAudioStats() ?: return loggedXruns
         _audioStats.value = stats
@@ -491,13 +517,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         return stats.xruns
     }
 
-    /**
-     * Pauses output once nothing has been played for as long as the screen stays awake
-     * after a note. Android counts even a silent running stream as music playing and,
-     * after 20 h of that above the safe level, drops the volume and shows the hearing
-     * warning again; pausing keeps that clock to real playing time. The engine resumes
-     * by itself on the next note, metronome start or recording.
-     */
+    /** Pause after the note wake timeout to avoid silent playback counting toward safe-volume limits; sound sources resume output. */
     private fun pauseAudioIfIdle() {
         val stats = _audioStats.value ?: return
         if (stats.pausedForIdle || stats.peakVoices > 0) return
@@ -506,13 +526,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         engine.pauseForIdle()
     }
 
-    /**
-     * A SoundFont holding just the GM kit's metronome sounds, cut from [gm] on first use.
-     * Loading the whole GM file for a few clicks keeps ~150 MB of samples in RAM, which
-     * Android swaps out while idle and the audio thread then stalls reading back.
-     * The file name carries the extractor version and the notes, so a fixed extractor or a
-     * changed sound list regenerates it.
-     */
+    /** Cache a versioned GM click subset keyed by notes to avoid keeping ~150 MB resident; selection/extractor changes regenerate it. */
     private fun metronomeKitPath(gm: java.io.File): String? {
         val keys = metronomeSounds.flatMap { listOf(it.downbeatNote, it.subbeatNote) }.toSortedSet()
         val kit = java.io.File(gm.parentFile, "metronome-kit-v1-${keys.joinToString("-")}.sf2")
@@ -566,11 +580,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         updateOutputProblem()
     }
 
-    /**
-     * Explains a missing chosen output by the layer that lost it: off the USB bus
-     * entirely (cable, power or hub), or on the bus but not opened by Android's
-     * audio service (replugging just that device usually fixes it).
-     */
+    /** Distinguish a missing USB bus device (cable/power/hub) from Android failing to open an enumerated output. */
     private fun updateOutputProblem() {
         val key = prefs.getString("audioOutputKey", null)
         if (key == null || key == "default" || _audioOutputs.value.any { it.preferredKey == key }) {
@@ -608,20 +618,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         engine.setAudioDevice(output.id)
         Log.i(TAG, "Set audio output: ${output.name} (id=${output.id}, key=${output.preferredKey})")
 
-        // Always max out system media volume on output change. Pyano expects to
-        // drive the device at unity and have the user attenuate at the speaker /
-        // interface / headphone amp. The built-in speaker is the one case where
-        // we leave it alone (so we don't blast the user).
+        // Use unity media volume for external outputs; leave the built-in speaker alone to avoid unexpected loudness.
         if (output.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
             maxSystemMediaVolume("output=${output.name}")
         }
     }
 
-    /**
-     * If the user has a remembered audio output, find it in the current device list
-     * (by stable name+type key) and bind to it. Falls back to the synthetic Default
-     * if the remembered device isn't currently present.
-     */
+    /** Restore output by stable type+name, falling back to Default when the remembered device is absent. */
     private fun tryRebindPreferredAudio() {
         // Read each time: the startup value goes stale once the user picks another output.
         val key = prefs.getString("audioOutputKey", null) ?: _selectedAudioOutput.value?.preferredKey ?: return
@@ -760,13 +763,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Force a consistent effect send level on a channel after a program change.
-     * SF2 presets reset CC91/CC93 to the preset's default modulators on program_select,
-     * which is often 0 for non-piano instruments — making the global reverb inaudible
-     * even though the reverb engine is on. Override here so reverb behaves the same
-     * across every instrument. Chorus is never used, so its send is always zero.
-     */
+    /** Presets reset CC91/93: restore reverb send after program changes and keep chorus send at zero. */
     private fun applyChannelSendDefaults(channel: Int) {
         engine.cc(channel, CC_REVERB_SEND, if (_reverbOn.value) REVERB_SEND_DEFAULT else 0)
         engine.cc(channel, CC_CHORUS_SEND, 0)
@@ -791,11 +788,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         engine.setBufferSize(value)
     }
 
-    /**
-     * Off stops the reverb unit processing entirely (so it costs no CPU) and zeroes
-     * every channel's CC91 send. On restores CC91 on all melodic channels (the
-     * metronome channel stays dry).
-     */
+    /** Disable reverb processing and CC91 when off; restore melodic sends when on, keeping metronome dry. */
     fun setReverbOn(on: Boolean) {
         _reverbOn.value = on
         save("reverbOn", on)
@@ -859,10 +852,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val tapTimestamps = mutableListOf<Long>()
 
-    /**
-     * Record a tap tempo event. Averages the last 4 tap intervals to compute BPM.
-     * Discards taps with >2s gaps (user paused).
-     */
+    /** Record a tap tempo event. Averages the last 4 tap intervals to compute BPM. Discards taps with >2s gaps (user paused). */
     fun tapTempo() {
         val now = System.currentTimeMillis()
         tapTimestamps.add(now)
@@ -1159,19 +1149,29 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     // --- Audio Recorder ---
 
     fun startAudioRecording() {
-        if (audioRecorder.isRecording) return
+        if (_isAudioRecording.value || _syncBusy.value) return
         audioRecorder.startRecording(viewModelScope)
         _isAudioRecording.value = true
         _recordingDurationSec.value = 0
     }
 
     fun stopAudioRecording() {
-        if (!audioRecorder.isRecording) return
+        if (!audioRecorder.isRecording || finishingRecording) return
+        finishingRecording = true
         viewModelScope.launch {
-            audioRecorder.stopRecording()
-            _isAudioRecording.value = false
-            _recordingDurationSec.value = 0
-            refreshRecordings()
+            try {
+                val path = audioRecorder.stopRecording()
+                _syncStatus.value = if (path == null) "No audio saved" else "Saved WAV + MIDI locally"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _syncStatus.value = "Save failed: ${e.message}"
+            } finally {
+                finishingRecording = false
+                _isAudioRecording.value = false
+                _recordingDurationSec.value = 0
+                refreshRecordings()
+            }
         }
     }
 
@@ -1180,12 +1180,16 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun renameRecording(path: String, newName: String) {
-        audioRecorder.renameRecording(path, newName)
+        if (_syncBusy.value) return
+        runCatching { audioRecorder.renameRecording(path, newName) }
+            .onFailure { _syncStatus.value = "Rename failed: ${it.message}" }
         refreshRecordings()
     }
 
     fun deleteRecording(path: String) {
-        audioRecorder.deleteRecording(path)
+        if (_syncBusy.value) return
+        runCatching { audioRecorder.deleteRecording(path) }
+            .onFailure { _syncStatus.value = "Delete failed: ${it.message}" }
         refreshRecordings()
     }
 
@@ -1310,6 +1314,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
             audioRecorder.cancelRecording()
             engine.stopRecording()
         }
+        engine.midiCapture.cancel()
         loopEngine.stopPlayback()
         midiEventHandler?.recordingListener = null
         engine.stopMetronome()

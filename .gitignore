@@ -18,3 +18,7 @@ platform_android/fluidsynth-libs/
 # Signing keystores — never commit
 *.keystore
 *.jks
+
+# Local sync recordings and device credentials
+local-sync/data/
+__pycache__/

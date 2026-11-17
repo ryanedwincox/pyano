@@ -1,3 +1,4 @@
+# Concern: builds the native audio library | Non-concern: Android packaging | IO: none
 cmake_minimum_required(VERSION 3.22.1)
 project(pyano-native LANGUAGES C CXX)
 

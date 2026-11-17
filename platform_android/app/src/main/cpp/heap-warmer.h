@@ -1,5 +1,4 @@
-// heap-warmer.h: Background thread that pages swapped-out malloc heap (SoundFont samples) back into RAM.
-// NOT concerned with: which allocations hold samples, the audio callback, or locking memory (mlock).
+// Concern: restores idle heap pages to RAM | Non-concern: audio callback work | IO: (memory maps) -> resident pages
 #pragma once
 
 #include <atomic>
@@ -16,17 +15,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-// Android compresses an idle app's memory into swap (zram), and an app with the
-// screen off is idle. SoundFont samples then stall the audio callback on the first
-// notes after a pause while their pages decompress (a 12 ms callback for 8 voices).
-// mlock can't help: apps may lock only 64 MB, and a piano SoundFont is several
-// hundred. Instead, every few seconds this thread finds heap pages that are no
-// longer resident and reads them back, so that cost lands here, off the RT thread.
-//
-// It walks every large readable malloc region (jemalloc's "[anon:libc_malloc]" or
-// Scudo's "[anon:scudo:*]"), which is where FluidSynth's sample data lives.
-// Pages are read with process_vm_readv on our own pid, which reports a range
-// that was unmapped in the meantime as an error instead of crashing.
+// Restore nonresident sample pages off the RT thread; process_vm_readv safely tolerates concurrent unmaps. See docs/native-audio.md.
 class HeapWarmer {
 public:
     ~HeapWarmer() { stop(); }
@@ -47,15 +36,13 @@ public:
         if (thread_.joinable()) thread_.join();
     }
 
-    // Idle (output paused, nobody playing): check far less often. Leaving idle runs a
-    // pass right away so the first notes after a pause find most pages resident.
+    // Check less often while idle; run immediately on wake to restore pages before playing.
     void setIdle(bool idle) {
         bool was = idle_.exchange(idle);
         if (was && !idle) cv_.notify_all();
     }
 
-    // Non-resident pages read since start (cumulative). Includes never-touched and
-    // allocator-released pages (they map the shared zero page), so it overstates swap-ins.
+    // Cumulative restored pages include untouched/released zero pages, so this overstates actual swap-ins.
     int pagesRestored() const { return restored_.load(std::memory_order_relaxed); }
 
 private:

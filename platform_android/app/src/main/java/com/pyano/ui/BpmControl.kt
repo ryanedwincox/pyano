@@ -1,4 +1,4 @@
-// BpmControl: Reusable BPM display with +/- buttons and slider. NOT concerned with tempo source or sync logic.
+// Concern: renders tempo controls | Non-concern: tempo scheduling | IO: (BPM) -> tempo actions
 package com.pyano.ui
 
 import androidx.compose.foundation.layout.*

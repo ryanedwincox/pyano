@@ -1,5 +1,4 @@
-// LoopEngine: MIDI loop recorder/player — stores timestamped MIDI events, plays back through FluidSynth.
-// NOT concerned with: audio recording, JNI, UI state. Purely Kotlin-level event capture and replay.
+// Concern: records and replays MIDI layers | Non-concern: WAV recording | IO: (MIDI events) -> loop playback
 package com.pyano.audio
 
 import android.util.Log
@@ -15,18 +14,7 @@ data class TimestampedMidiEvent(
     val velocity: Int
 )
 
-/**
- * MIDI loop engine with up to [MAX_LAYERS] overdub layers.
- *
- * Records live MIDI events as [TimestampedMidiEvent] with nanosecond offsets from loop start,
- * then replays them through [FluidSynthEngine] in a tight coroutine loop. Live playing and
- * loop playback coexist — both drive the same FluidSynth instance simultaneously.
- *
- * Timing model: wall-clock compensated coroutine [delay] between events. FluidSynth's own
- * audio buffer (typically 256+ samples @ 48 kHz ≈ 5 ms) dominates latency anyway.
- *
- * Thread safety: all layer access is synchronized on [layerLock].
- */
+/** Record nanosecond-offset layers under layerLock; replay with wall-clock-compensated coroutine delays alongside live input. */
 class LoopEngine(private val engine: FluidSynthEngine) {
 
     companion object {
@@ -88,9 +76,7 @@ class LoopEngine(private val engine: FluidSynthEngine) {
 
     // --- Public API: recording ---
 
-    /**
-     * Start recording to the next empty layer. Returns the layer index, or -1 if all full.
-     */
+    /** Start recording to the next empty layer. Returns the layer index, or -1 if all full. */
     fun startRecording(): Int {
         val idx = synchronized(layerLock) {
             layers.indexOfFirst { it.isEmpty() }
@@ -106,10 +92,7 @@ class LoopEngine(private val engine: FluidSynthEngine) {
         return idx
     }
 
-    /**
-     * Start recording to a specific layer, clearing it first if non-empty.
-     * Returns the layer index on success, or -1 if index is out of range.
-     */
+    /** Start recording to a specific layer, clearing it first if non-empty. Returns the layer index on success, or -1 if index is out of range. */
     fun startRecordingOnLayer(index: Int): Int {
         if (index !in 0 until MAX_LAYERS) return -1
         synchronized(layerLock) {
@@ -134,10 +117,7 @@ class LoopEngine(private val engine: FluidSynthEngine) {
         recordingLayerIndex = -1
     }
 
-    /**
-     * Called by [MidiRecordingListener] bridge to capture a live MIDI event during recording.
-     * Offset is computed relative to loop start, modulo loop duration for seamless looping.
-     */
+    /** Capture live input via [MidiRecordingListener] with offsets relative to loop start, modulo loop duration. */
     fun recordEvent(channel: Int, type: MidiEventType, note: Int, velocity: Int) {
         if (!isRecording || recordingLayerIndex < 0) return
         val elapsed = System.nanoTime() - recordStartNs
@@ -152,10 +132,7 @@ class LoopEngine(private val engine: FluidSynthEngine) {
 
     // --- Public API: playback ---
 
-    /**
-     * Start looped playback of all non-empty layers. Uses the provided [scope] for the
-     * playback coroutine so cancellation is tied to the caller's lifecycle.
-     */
+    /** Start looped playback of all non-empty layers. Uses the provided [scope] for the playback coroutine so cancellation is tied to the caller's lifecycle. */
     fun startPlayback(scope: CoroutineScope) {
         if (isPlaying) return
         isPlaying = true
@@ -183,12 +160,7 @@ class LoopEngine(private val engine: FluidSynthEngine) {
         // isPlaying reset in the coroutine's finally block
     }
 
-    /**
-     * Check if recording should auto-stop at loop boundary.
-     * Called from the ViewModel's polling loop. Works in both overdub mode
-     * (playback + recording) and standalone recording mode.
-     * Returns true if recording was auto-stopped.
-     */
+    /** Polling supports standalone and overdub modes; return true if recording stopped at the loop boundary. */
     fun checkAutoStopRecording(): Boolean {
         if (!isRecording) return false
         val elapsed = System.nanoTime() - recordStartNs
@@ -201,10 +173,7 @@ class LoopEngine(private val engine: FluidSynthEngine) {
 
     // --- Public API: recording position ---
 
-    /**
-     * Elapsed nanoseconds since recording started. Returns 0 if not recording.
-     * Used by ViewModel to compute transport position during record-only mode (no playback).
-     */
+    /** Return recording elapsed nanoseconds (0 when inactive) for transport display without playback. */
     fun getRecordingPositionNs(): Long {
         if (!isRecording) return 0L
         return System.nanoTime() - recordStartNs
@@ -274,10 +243,6 @@ class LoopEngine(private val engine: FluidSynthEngine) {
 
     // --- Internal: playback loop ---
 
-    /**
-     * Play through one full loop iteration. Merges all layer events, sorts by offset,
-     * dispatches to FluidSynth with wall-clock compensated delays.
-     */
     /** Event tagged with its source layer for real-time mute checking. */
     private data class TaggedEvent(val layerIndex: Int, val event: TimestampedMidiEvent)
 

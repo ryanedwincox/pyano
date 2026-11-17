@@ -1,10 +1,4 @@
-// Role: JVM unit tests for the MIDI byte-stream parser in midi/MidiEventHandler.onSend.
-// NOT concerned with the native audio engine or Android MIDI device plumbing.
-//
-// FluidSynthEngine loads a native .so in its companion init, so it cannot be
-// constructed on the JVM. We mock it with Mockito (Objenesis-instantiated, so no
-// constructor or static initializer runs) and observe parser behaviour both
-// through verified engine calls and through the recordingListener seam.
+// Concern: tests MIDI stream parsing | Non-concern: native synthesis | IO: (MIDI bytes) -> assertions
 package com.pyano
 
 import com.pyano.audio.FluidSynthEngine
@@ -24,10 +18,7 @@ import org.mockito.Mockito.verifyNoInteractions
 
 class MidiEventHandlerTest {
 
-    // FluidSynthEngine's companion init runs System.loadLibrary("pyano-native").
-    // The build compiles an empty stub .so onto java.library.path so the class can
-    // initialize on the JVM. If that stub is unavailable (no host C compiler), the
-    // class can't load and these tests are skipped rather than reported as failures.
+    // The empty native stub permits class initialization; skip these tests if the host compiler could not build it.
     @Before
     fun nativeStubAvailable() {
         try {
@@ -151,8 +142,7 @@ class MidiEventHandlerTest {
     @Test
     fun statusAndDataBytesAreMaskedFromSignedBytes() {
         val (handler, engine, captured) = newHandler()
-        // 0x95 stored as a signed byte is negative; the parser must mask with 0xFF.
-        // Channel nibble 0x05 -> channel 5; note 0x7F is the max data value.
+        // 0x95 stored as a signed byte is negative; the parser must mask with 0xFF. Channel nibble 0x05 -> channel 5; note 0x7F is the max data value.
         val data = bytes(0x95, 0x7F, 0x7F)
         assertTrue("status byte should be negative as a signed Byte", data[0] < 0)
         handler.onSend(data, 0, data.size, 0L)

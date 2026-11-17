@@ -1,5 +1,4 @@
-// DeviceDiagnostics: Records USB, audio-output, MIDI, charging and screen events to a persistent log and explains why an output is missing.
-// NOT concerned with: choosing or binding outputs (PyanoViewModel), or fixing connections (Android exposes no USB reset).
+// Concern: records device connection history | Non-concern: binding audio outputs | IO: (device events) -> diagnostic log
 package com.pyano
 
 import android.content.BroadcastReceiver
@@ -31,18 +30,7 @@ data class UsbDeviceStatus(
     val functions: String,
 )
 
-/**
- * Answers "is it the cable, the hub, Android or Pyano?" without replugging.
- * A USB audio interface goes through three layers before Pyano can play to it:
- * the kernel enumerates it on the bus (USB attach), Android's audio service
- * opens it (audio output added), then Pyano binds the stream. Recording each
- * layer's events separately shows which one failed, and the device number in
- * the bus path shows how many times things reconnected since boot. Charging
- * and screen changes are recorded too: USB-C hubs with power pass-through
- * often reset their ports when the charger renegotiates.
- *
- * The log is a file so it survives the restarts and reboots it is meant to explain.
- */
+/** Persist USB enumeration, Android output, charging, and screen events to distinguish cable/hub failures from routing failures. */
 class DeviceDiagnostics(private val context: Context) {
     private val usbManager = context.getSystemService(UsbManager::class.java)
     private val logFile = File(context.filesDir, "device-events.log")

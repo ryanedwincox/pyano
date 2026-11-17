@@ -1,5 +1,4 @@
-// AudioRecorder: PCM capture from Oboe ring buffer, drain to temp file, WAV export.
-// NOT concerned with: MP3 encoding, microphone input, or MIDI recording.
+// Concern: captures synth audio to WAV | Non-concern: MIDI recording | IO: (PCM ring buffer) -> WAV files
 package com.pyano.audio
 
 import android.content.Context
@@ -145,6 +144,7 @@ class AudioRecorder(
         tempPcmFile = tempFile
 
         engine.startRecording()
+        engine.midiCapture.start()
         isRecording = true
 
         // Launch drain coroutine: reads ring buffer -> writes raw PCM floats to temp file
@@ -172,6 +172,7 @@ class AudioRecorder(
         isRecording = false
 
         engine.stopRecording()
+        val midiBytes = engine.midiCapture.finish()
 
         // Wait for drain coroutine to finish flushing
         drainJob?.join()
@@ -197,6 +198,14 @@ class AudioRecorder(
 
         // Encode to WAV
         val wavPath = encodeToWav(tempFile)
+        if (wavPath != null && midiBytes != null) {
+            withContext(Dispatchers.IO) {
+                val pending = File.createTempFile("pyano_pending_", ".mid", context.cacheDir)
+                pending.writeBytes(midiBytes)
+                RecordingBundleFiles.saveMidi(File(wavPath)) { staging -> pending.copyTo(staging, overwrite = true) }
+                pending.delete()
+            }
+        }
         tempFile.delete()
         totalFloatsWritten = 0
 
@@ -228,7 +237,7 @@ class AudioRecorder(
         )
         pyanoDir.mkdirs()
 
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         val wavFile = File(pyanoDir, "Pyano_$timestamp.wav")
 
         try {
@@ -354,11 +363,9 @@ class AudioRecorder(
             ?: emptyList()
     }
 
-    /**
-     * Cancel recording without producing a WAV file. Stops the drain coroutine and cleans up
-     * the temp file. Safe to call from onCleared (synchronous, non-suspend).
-     */
+    /** Synchronously stop draining and remove temp PCM without exporting WAV; safe during onCleared. */
     fun cancelRecording() {
+        engine.midiCapture.cancel()
         if (!isRecording) return
         isRecording = false
         drainJob?.cancel()
@@ -369,26 +376,10 @@ class AudioRecorder(
         Log.i(TAG, "Recording cancelled")
     }
 
-    fun renameRecording(path: String, newName: String): String? {
-        val file = File(path)
-        if (!file.exists()) return null
-        val sanitized = newName.replace(Regex("[/\\\\<>:\"|?*]"), "_").trim()
-        if (sanitized.isBlank()) return null
-        val dest = File(file.parent, "$sanitized.wav")
-        if (dest.exists()) return null
-        return if (file.renameTo(dest)) {
-            Log.i(TAG, "Renamed recording: $path -> ${dest.absolutePath}")
-            dest.absolutePath
-        } else null
-    }
+    fun renameRecording(path: String, newName: String): String =
+        RecordingBundleFiles.rename(File(path), newName.trim()).absolutePath
 
-    fun deleteRecording(path: String): Boolean {
-        val file = File(path)
-        if (file.exists()) {
-            val deleted = file.delete()
-            Log.i(TAG, "Deleted recording: $path, success=$deleted")
-            return deleted
-        }
-        return false
+    fun deleteRecording(path: String) {
+        RecordingBundleFiles.delete(File(path))
     }
 }

@@ -1,0 +1,28 @@
+# Concern: enforces repository comment budgets | Non-concern: annotation coverage | IO: none
+[rules.comment-block]
+max_chars = 160
+max_lines = 1
+doc_max_chars = 160
+doc_max_lines = 1
+header_max_chars = 160
+header_max_lines = 1
+level = "deny"
+
+[rules.comment-ratio]
+count_doc_comments = true
+header_free_chars = 0
+skip_header = false
+max_ratio = 0.35
+min_chars = 200
+level = "deny"
+
+[rules.doc-length]
+max_lines = 90
+level = "deny"
+
+[rules.unreadable]
+level = "deny"
+
+# Generated upstream wrappers retain their license text and maintenance comments.
+[global]
+exclude = ["target", "node_modules", "vendor", "dist", "build", ".venv", "platform_android/gradlew", "platform_android/gradlew.bat"]

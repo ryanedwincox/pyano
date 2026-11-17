@@ -1,5 +1,4 @@
-// MidiDeviceManager: Discovers, connects, and disconnects Android MIDI input devices, routing them to a receiver.
-// NOT concerned with: parsing MIDI bytes, audio synthesis, or UI state.
+// Concern: routes Android MIDI devices to receivers | Non-concern: MIDI byte parsing | IO: (device changes) -> MIDI connections
 package com.pyano.midi
 
 import android.content.Context

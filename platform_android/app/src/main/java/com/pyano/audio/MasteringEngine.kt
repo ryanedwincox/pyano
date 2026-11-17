@@ -1,5 +1,4 @@
-// MasteringEngine: DSP chain + AudioTrack playback for mastering suite.
-// NOT concerned with: UI state, MIDI, recording, or microphone input.
+// Concern: processes and exports mastered audio | Non-concern: Compose controls | IO: (WAV and settings) -> processed audio
 package com.pyano.audio
 
 import android.media.AudioAttributes
@@ -27,9 +26,7 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-// ---------------------------------------------------------------------------
 // BiquadFilter — Robert Bristow-Johnson audio EQ cookbook, direct form II transposed
-// ---------------------------------------------------------------------------
 
 class BiquadFilter private constructor(
     private var b0: Float,
@@ -57,8 +54,7 @@ class BiquadFilter private constructor(
         val sinW = sin(w)
         val sin2W = sin(2.0 * w)
 
-        // H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
-        // z = e^jω, so z^-1 = e^-jω
+        // H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2) z = e^jω, so z^-1 = e^-jω
         val numReal = b0 + b1 * cosW + b2 * cos2W
         val numImag = -(b1 * sinW + b2 * sin2W)
         val denReal = 1.0 + a1 * cosW + a2 * cos2W
@@ -138,9 +134,7 @@ class BiquadFilter private constructor(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Compressor — Envelope follower with configurable attack/release
-// ---------------------------------------------------------------------------
 
 class Compressor(
     thresholdDb: Float = -12f,
@@ -192,9 +186,7 @@ class Compressor(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Limiter — Brick-wall lookahead limiter with 5ms delay line
-// ---------------------------------------------------------------------------
 
 class Limiter(
     ceilingDb: Float = -0.3f,
@@ -248,9 +240,7 @@ class Limiter(
     }
 }
 
-// ---------------------------------------------------------------------------
 // MasteringChain — Composes 3-band EQ + compressor + limiter, stereo
-// ---------------------------------------------------------------------------
 
 class MasteringChain(private val sampleRate: Int = 48000) {
 
@@ -367,9 +357,7 @@ class MasteringChain(private val sampleRate: Int = 48000) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // MasteringPlayer — AudioTrack streaming playback through MasteringChain
-// ---------------------------------------------------------------------------
 
 class MasteringPlayer {
     val chain = MasteringChain()
@@ -569,9 +557,7 @@ class MasteringPlayer {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Export — Process source WAV through chain, write new WAV
-// ---------------------------------------------------------------------------
 
 suspend fun exportMaster(
     wavPath: String,
@@ -692,9 +678,7 @@ private fun writeExportWavHeader(
     file.write(header.array())
 }
 
-// ---------------------------------------------------------------------------
 // Utility — dB/linear conversions shared across DSP classes
-// ---------------------------------------------------------------------------
 
 internal fun linearToDb(linear: Float): Float {
     return if (linear <= 0f) -96f else (20f * log10(linear)).coerceAtLeast(-96f)

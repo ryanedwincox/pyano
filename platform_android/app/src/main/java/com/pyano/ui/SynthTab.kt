@@ -1,4 +1,4 @@
-// SynthTab: Synth engine controls — SoundFont selection, MIDI/audio routing, effects, instruments. NOT concerned with navigation.
+// Concern: renders instrument and routing controls | Non-concern: navigation | IO: (synth state) -> control actions
 package com.pyano.ui
 
 import androidx.compose.foundation.background

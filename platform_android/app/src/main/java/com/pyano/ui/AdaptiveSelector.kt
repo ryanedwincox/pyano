@@ -1,4 +1,4 @@
-// AdaptiveSelector: Generic picker that adapts between chips (few items) and dropdown (many items). NOT concerned with item semantics.
+// Concern: renders an adaptive option picker | Non-concern: option semantics | IO: (options and selection) -> picker UI
 package com.pyano.ui
 
 import androidx.compose.foundation.BorderStroke
@@ -23,14 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-/**
- * Generic picker that adapts its layout to the number of options:
- *   - empty           → disabled button showing [emptyText]
- *   - 1..[threshold]  → wrapping FlowRow of FilterChips (one tap to switch)
- *   - > [threshold]   → OutlinedButton + DropdownMenu (the legacy pattern)
- *
- * Item identity is by reference (or value-equals) — callers should pass stable items.
- */
+/** Empty: disabled; few: chips; many: dropdown. Pass stable item identities or value-equal options. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun <T> AdaptiveSelector(

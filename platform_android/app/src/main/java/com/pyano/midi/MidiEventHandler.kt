@@ -1,5 +1,4 @@
-// MidiEventHandler: Parses raw MIDI byte streams and dispatches to FluidSynth + optional recording listener.
-// NOT concerned with: loop logic, UI state, synth engine configuration.
+// Concern: parses MIDI input for the synth and recorder | Non-concern: loop scheduling | IO: (MIDI bytes) -> engine events
 package com.pyano.midi
 
 import android.media.midi.MidiReceiver
