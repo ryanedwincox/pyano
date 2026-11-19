@@ -12,6 +12,14 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.pyano.audio.AudioRecorder
 import com.pyano.audio.AudioStats
 import com.pyano.audio.FluidSynthEngine
@@ -27,13 +35,20 @@ import com.pyano.midi.MidiDeviceManager
 import com.pyano.midi.MidiEventHandler
 import com.pyano.midi.MidiRecordingListener
 import com.pyano.sync.LocalSyncClient
+import com.pyano.sync.CloudCredentialsStore
+import com.pyano.sync.CloudUploadWorker
+import com.pyano.sync.CloudUploadQueue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import java.io.File
+import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 data class AudioOutput(val id: Int, val name: String, val type: Int) {
     /** Use type+name across reconnects; Android reassigns device IDs, while the synthetic Default entry has a fixed key. */
@@ -132,6 +147,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _gain = MutableStateFlow(prefs.getFloat("gain", 3.0f))
     val gain = _gain.asStateFlow()
 
+    private val _transposeSemitones = MutableStateFlow(
+        prefs.getInt("transposeSemitones", 0).coerceIn(MidiEventHandler.MIN_TRANSPOSE, MidiEventHandler.MAX_TRANSPOSE)
+    )
+    val transposeSemitones = _transposeSemitones.asStateFlow()
+
     // Buffer frames, 0 = automatic; the old bufferSize key meant callback frames and must not be reused.
     private val _bufferSize = MutableStateFlow(prefs.getInt("bufferFrames", 0))
     val bufferSize = _bufferSize.asStateFlow()
@@ -225,25 +245,52 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     private val _loopLayerNames = MutableStateFlow(List(LoopEngine.MAX_LAYERS) { "Layer ${it + 1}" })
     val loopLayerNames = _loopLayerNames.asStateFlow()
 
-    private val _syncStatus = MutableStateFlow("Configure a local server to upload selected takes")
+    private val cloudCredentials = CloudCredentialsStore(application)
+    private val _syncStatus = MutableStateFlow("Configure recording sync to upload selected takes")
     val syncStatus = _syncStatus.asStateFlow()
     private val _syncBusy = MutableStateFlow(false)
     val syncBusy = _syncBusy.asStateFlow()
     private var syncEndpoint = prefs.getString("syncEndpoint", "http://127.0.0.1:8765").orEmpty()
     private var syncToken = ""
+    private var syncCloud = prefs.getBoolean("syncCloud", false)
+    private var syncOwnerId = prefs.getString("syncOwnerId", "").orEmpty()
+    private var syncProfileId = cloudCredentials.currentProfileId()
     private var finishingRecording = false
-    val localSyncEndpoint get() = syncEndpoint
+    val recordingSyncEndpoint get() = syncEndpoint
+    val cloudSyncEnabled get() = syncCloud
+    val cloudSyncOwnerId get() = syncOwnerId
 
-    fun configureLocalSync(endpoint: String, token: String) {
+    init {
+        observeCloudUploads()
+    }
+
+    fun configureRecordingSync(endpoint: String, ownerId: String, token: String, cloud: Boolean) {
         if (_syncBusy.value) return
+        if (cloud) {
+            val profile = runCatching { cloudCredentials.save(endpoint, ownerId, token.trim()) }
+            if (profile.isFailure) {
+                _syncStatus.value = profile.exceptionOrNull()?.message ?: "Invalid cloud settings"
+                return
+            }
+            syncProfileId = profile.getOrThrow()
+        }
         syncEndpoint = endpoint.trim()
-        syncToken = token.trim()
-        prefs.edit().putString("syncEndpoint", syncEndpoint).apply()
-        _syncStatus.value = "Local server configured; select a take to upload"
+        syncCloud = cloud
+        syncOwnerId = ownerId.trim()
+        if (cloud) syncToken = "" else {
+            syncToken = token.trim()
+        }
+        prefs.edit().putString("syncEndpoint", syncEndpoint).putBoolean("syncCloud", cloud)
+            .putString("syncOwnerId", syncOwnerId).apply()
+        _syncStatus.value = if (cloud) "Cloud configured; uploads survive app restarts" else "Local server configured; select a take to upload"
     }
 
     fun uploadRecording(recording: RecordingInfo) {
         if (_syncBusy.value || _isAudioRecording.value) return
+        if (syncCloud) {
+            enqueueCloudUpload(recording)
+            return
+        }
         if (syncToken.isBlank()) {
             _syncStatus.value = "Enter the server device token first"
             return
@@ -265,6 +312,71 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 _syncBusy.value = false
             }
         }
+    }
+
+    private fun enqueueCloudUpload(recording: RecordingInfo) {
+        val profileId = syncProfileId
+        if (profileId == null || cloudCredentials.load(profileId) == null) {
+            _syncStatus.value = "Enter the cloud owner ID and device token first"
+            return
+        }
+        _syncStatus.value = "Preparing ${recording.name} for cloud upload…"
+        viewModelScope.launch {
+            val snapshot = runCatching {
+                withContext(Dispatchers.IO) {
+                    CloudUploadQueue(File(getApplication<Application>().filesDir, "cloud-upload-queue"))
+                        .snapshot(File(recording.path), profileId)
+                }
+            }.getOrElse {
+                _syncStatus.value = it.message ?: "Could not queue recording"
+                return@launch
+            }
+            val request = OneTimeWorkRequestBuilder<CloudUploadWorker>()
+                .setInputData(Data.Builder().putString(CloudUploadWorker.KEY_PATH, snapshot.wav.absolutePath)
+                    .putLong(CloudUploadWorker.KEY_DURATION_MS, recording.durationMs)
+                    .putString(CloudUploadWorker.KEY_PROFILE_ID, profileId)
+                    .putString(CloudUploadWorker.KEY_TITLE, recording.name)
+                    .putString(CloudUploadWorker.KEY_CAPTURED_AT, Instant.ofEpochMilli(recording.dateMs).toString()).build())
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .addTag("pyano-cloud-upload")
+                .build()
+            WorkManager.getInstance(getApplication()).enqueueUniqueWork(
+                CloudUploadQueue.uniqueWorkName(snapshot.id), ExistingWorkPolicy.KEEP, request,
+            )
+            _syncStatus.value = "Queued ${recording.name} for private cloud upload"
+        }
+    }
+
+    private fun observeCloudUploads() {
+        viewModelScope.launch {
+            WorkManager.getInstance(getApplication()).getWorkInfosByTagFlow("pyano-cloud-upload").collect { jobs ->
+                if (!syncCloud) return@collect
+                val job = jobs.maxByOrNull { cloudJobPriority(it.state) } ?: return@collect
+                if (job.state == WorkInfo.State.SUCCEEDED) {
+                    job.outputData.getString(CloudUploadWorker.KEY_SNAPSHOT_PATH)?.let { path ->
+                        withContext(Dispatchers.IO) {
+                            CloudUploadQueue(File(getApplication<Application>().filesDir, "cloud-upload-queue")).remove(File(path))
+                        }
+                    }
+                }
+                _syncStatus.value = when (job.state) {
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> "Cloud upload queued; waiting for network"
+                    WorkInfo.State.RUNNING -> "Uploading recording to cloud…"
+                    WorkInfo.State.SUCCEEDED -> "Cloud upload complete; awaiting admin publication"
+                    WorkInfo.State.FAILED -> job.outputData.getString(CloudUploadWorker.KEY_ERROR) ?: "Cloud upload failed; tap Upload to retry"
+                    WorkInfo.State.CANCELLED -> "Cloud upload cancelled"
+                }
+            }
+        }
+    }
+
+    private fun cloudJobPriority(state: WorkInfo.State) = when (state) {
+        WorkInfo.State.RUNNING -> 5
+        WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> 4
+        WorkInfo.State.FAILED -> 3
+        WorkInfo.State.CANCELLED -> 2
+        WorkInfo.State.SUCCEEDED -> 1
     }
 
     // --- Audio Recorder ---
@@ -380,7 +492,10 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         scanSoundFonts()
 
         // Set up MIDI device monitoring
-        midiEventHandler = MidiEventHandler(engine).also { it.notePlayedListener = kiosk::onNotePlayed }
+        midiEventHandler = MidiEventHandler(engine).also {
+            it.notePlayedListener = kiosk::onNotePlayed
+            it.setTransposeSemitones(_transposeSemitones.value)
+        }
         refreshMidiDevices()
         midiManager.registerCallback(
             onDeviceAdded = { info ->
@@ -780,6 +895,13 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         _gain.value = value
         save("gain", value)
         engine.setGain(value)
+    }
+
+    fun setTransposeSemitones(semitones: Int) {
+        val clamped = semitones.coerceIn(MidiEventHandler.MIN_TRANSPOSE, MidiEventHandler.MAX_TRANSPOSE)
+        midiEventHandler?.setTransposeSemitones(clamped)
+        _transposeSemitones.value = clamped
+        save("transposeSemitones", clamped)
     }
 
     fun setBufferSize(value: Int) {

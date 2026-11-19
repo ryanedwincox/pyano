@@ -79,10 +79,12 @@ fun RecorderTab(viewModel: PyanoViewModel) {
         Spacer(modifier = Modifier.height(16.dp))
 
         LocalSyncPanel(
-            endpoint = viewModel.localSyncEndpoint,
+            endpoint = viewModel.recordingSyncEndpoint,
+            cloud = viewModel.cloudSyncEnabled,
+            ownerId = viewModel.cloudSyncOwnerId,
             status = syncStatus,
             busy = syncBusy,
-            onConfigure = viewModel::configureLocalSync
+            onConfigure = viewModel::configureRecordingSync
         )
         Spacer(modifier = Modifier.height(12.dp))
 

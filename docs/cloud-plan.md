@@ -59,7 +59,10 @@ Status: proposed. Cloud counterpart: `music.incatpacitated.com`; see
 
 1. Recording bundles and MIDI export; verify overlapping notes, sustain, loops,
    touch input, and alignment against recorded and compressed audio.
-2. Device provisioning and manual upload; verify retry/restart, duplicate
-   requests, revocation, and partial-bundle recovery.
+2. Device provisioning and manual upload; the cloud Worker and tablet client
+   now implement scoped tokens, durable recording snapshots, multipart retry,
+   duplicate suppression, revocation, and restart recovery. Successful snapshots
+   are retained until WorkManager durably records completion. Remote staging
+   validation remains.
 3. PDF library and offline viewer; verify audio continuity and page restoration.
 4. Website visualization prototype; optionally add tablet visuals later.

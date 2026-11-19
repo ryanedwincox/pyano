@@ -20,6 +20,7 @@ fun SynthTab(viewModel: PyanoViewModel) {
     val presets by viewModel.presets.collectAsState()
     val selectedPresetIndex by viewModel.selectedPresetIndex.collectAsState()
     val gain by viewModel.gain.collectAsState()
+    val transposeSemitones by viewModel.transposeSemitones.collectAsState()
     val bufferSize by viewModel.bufferSize.collectAsState()
     val audioStats by viewModel.audioStats.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -134,6 +135,32 @@ fun SynthTab(viewModel: PyanoViewModel) {
                             modifier = Modifier.weight(1f),
                             emptyText = "No MIDI device",
                         )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Transpose", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(88.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.setTransposeSemitones(transposeSemitones - 1) },
+                            enabled = transposeSemitones > -24,
+                        ) { Text("−") }
+                        Text(
+                            text = if (transposeSemitones == 0) "0 semitones" else "%+d semitones".format(transposeSemitones),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                        )
+                        OutlinedButton(
+                            onClick = { viewModel.setTransposeSemitones(transposeSemitones + 1) },
+                            enabled = transposeSemitones < 24,
+                        ) { Text("+") }
+                        TextButton(
+                            onClick = { viewModel.setTransposeSemitones(0) },
+                            enabled = transposeSemitones != 0,
+                        ) { Text("Reset") }
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))

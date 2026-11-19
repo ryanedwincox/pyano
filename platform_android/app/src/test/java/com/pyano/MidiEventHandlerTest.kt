@@ -174,4 +174,43 @@ class MidiEventHandlerTest {
         verify(engine).noteOn(0, 60, 100)
         assertEquals(1, handler.activeNoteCount)
     }
+
+    @Test
+    fun transposeShiftsPlaybackAndRecordedNotes() {
+        val (handler, engine, captured) = newHandler()
+        handler.setTransposeSemitones(-3)
+
+        handler.onSend(bytes(0x90, 60, 100, 0x80, 60, 0), 0, 6, 0L)
+
+        verify(engine).noteOn(0, 57, 100)
+        verify(engine).noteOff(0, 57)
+        assertEquals(
+            listOf(Event(0, MidiEventType.NOTE_ON, 57, 100), Event(0, MidiEventType.NOTE_OFF, 57, 0)),
+            captured,
+        )
+    }
+
+    @Test
+    fun transposeSilencesNotesOutsideMidiRange() {
+        val (handler, engine, captured) = newHandler()
+        handler.setTransposeSemitones(12)
+
+        handler.onSend(bytes(0x90, 120, 100, 0x80, 120, 0), 0, 6, 0L)
+
+        verifyNoInteractions(engine)
+        assertTrue(captured.isEmpty())
+        assertEquals(0, handler.activeNoteCount)
+    }
+
+    @Test
+    fun changingTransposeReleasesHeldNotes() {
+        val (handler, engine, _) = newHandler()
+        handler.onSend(bytes(0x90, 60, 100), 0, 3, 0L)
+
+        handler.setTransposeSemitones(2)
+
+        for (channel in 0 until 16) verify(engine).cc(channel, 123, 0)
+        assertEquals(0, handler.activeNoteCount)
+        assertEquals(2, handler.transposeSemitones)
+    }
 }

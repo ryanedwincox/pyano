@@ -12,6 +12,13 @@ interface MidiRecordingListener {
 }
 
 class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
+    companion object {
+        const val MIN_TRANSPOSE = -24
+        const val MAX_TRANSPOSE = 24
+        private const val NO_SOUNDING_NOTE = -1
+        private const val UNKNOWN_NOTE = -2
+    }
+
     @Volatile var lastEventTimeMs: Long = 0L
         private set
     @Volatile var activeNoteCount: Int = 0
@@ -23,9 +30,15 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
     /** Called on every played note (NoteOn with velocity > 0), after it is sent to the synth. */
     @Volatile var notePlayedListener: (() -> Unit)? = null
 
+    @Volatile var transposeSemitones: Int = 0
+        private set
+
+    private val soundingNotes = IntArray(16 * 128) { UNKNOWN_NOTE }
+
     // Running status — last channel-voice status byte seen (for MIDI running status support)
     private var runningStatus: Int = 0
 
+    @Synchronized
     override fun onSend(data: ByteArray, offset: Int, count: Int, timestamp: Long) {
         if (count < 1) return
         lastEventTimeMs = System.currentTimeMillis()
@@ -59,23 +72,23 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                     val note = data[pos].toInt() and 0x7F
                     val velocity = data[pos + 1].toInt() and 0x7F
                     if (velocity > 0) {
-                        engine.noteOn(channel, note, velocity)
-                        activeNoteCount++
-                        recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_ON, note, velocity)
-                        notePlayedListener?.invoke()
+                        val transposedNote = note + transposeSemitones
+                        if (transposedNote in 0..127) {
+                            soundingNotes[channel * 128 + note] = transposedNote
+                            engine.noteOn(channel, transposedNote, velocity)
+                            activeNoteCount++
+                            recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_ON, transposedNote, velocity)
+                            notePlayedListener?.invoke()
+                        }
                     } else {
-                        engine.noteOff(channel, note)
-                        if (activeNoteCount > 0) activeNoteCount--
-                        recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_OFF, note, 0)
+                        releaseNote(channel, note)
                     }
                     pos += 2
                 }
                 0x80 -> { // Note Off (2 data bytes)
                     if (pos + 1 >= end) { Log.w("Pyano", "MIDI truncated NoteOff at pos=$pos"); break }
                     val note = data[pos].toInt() and 0x7F
-                    engine.noteOff(channel, note)
-                    if (activeNoteCount > 0) activeNoteCount--
-                    recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_OFF, note, 0)
+                    releaseNote(channel, note)
                     pos += 2
                 }
                 0xB0 -> { // Control Change (2 data bytes)
@@ -104,5 +117,35 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                 else -> { pos++ }
             }
         }
+    }
+
+    @Synchronized
+    fun setTransposeSemitones(semitones: Int) {
+        val clamped = semitones.coerceIn(MIN_TRANSPOSE, MAX_TRANSPOSE)
+        if (clamped == transposeSemitones) return
+        if (activeNoteCount > 0) {
+            for (channel in 0 until 16) engine.cc(channel, 123, 0)
+            for (index in soundingNotes.indices) {
+                val soundingNote = soundingNotes[index]
+                if (soundingNote >= 0) {
+                    recordingListener?.onMidiEvent(index / 128, MidiEventType.NOTE_OFF, soundingNote, 0)
+                }
+            }
+        }
+        soundingNotes.fill(NO_SOUNDING_NOTE)
+        activeNoteCount = 0
+        transposeSemitones = clamped
+    }
+
+    private fun releaseNote(channel: Int, inputNote: Int) {
+        val index = channel * 128 + inputNote
+        val storedNote = soundingNotes[index]
+        if (storedNote == NO_SOUNDING_NOTE) return
+        val soundingNote = if (storedNote == UNKNOWN_NOTE) inputNote + transposeSemitones else storedNote
+        if (soundingNote !in 0..127) return
+        soundingNotes[index] = NO_SOUNDING_NOTE
+        engine.noteOff(channel, soundingNote)
+        if (activeNoteCount > 0) activeNoteCount--
+        recordingListener?.onMidiEvent(channel, MidiEventType.NOTE_OFF, soundingNote, 0)
     }
 }
