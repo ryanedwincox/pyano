@@ -101,7 +101,10 @@ fun readWavHeader(file: File): WavHeader {
 
 class AudioRecorder(
     private val engine: FluidSynthEngine,
-    private val context: Context
+    private val context: Context,
+    private val recordingsDirectory: () -> File = {
+        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Pyano")
+    }
 ) {
     companion object {
         private const val TAG = "Pyano"
@@ -121,6 +124,8 @@ class AudioRecorder(
 
     private var drainJob: Job? = null
     private var tempPcmFile: File? = null
+    private var pendingMidi: ByteArray? = null
+    private var pendingWav: String? = null
     private var recordingSampleRate: Int = DEFAULT_SAMPLE_RATE
 
     /** Duration of current recording in milliseconds. */
@@ -133,7 +138,7 @@ class AudioRecorder(
         }
 
     fun startRecording(scope: CoroutineScope) {
-        if (isRecording) return
+        if (isRecording || tempPcmFile != null) return
 
         recordingSampleRate = engine.getRecordingSampleRate()
         totalFloatsWritten = 0
@@ -167,19 +172,22 @@ class AudioRecorder(
         Log.i(TAG, "Recording started, sampleRate=$recordingSampleRate")
     }
 
-    suspend fun stopRecording(): String? {
-        if (!isRecording) return null
-        isRecording = false
+    val hasPendingTake get() = tempPcmFile != null
 
-        engine.stopRecording()
-        val midiBytes = engine.midiCapture.finish()
+    suspend fun finishTake(): Boolean {
+        if (tempPcmFile == null) return false
+        if (isRecording) {
+            isRecording = false
+            engine.stopRecording()
+            pendingMidi = engine.midiCapture.finish()
+        }
 
         // Wait for drain coroutine to finish flushing
         drainJob?.join()
         drainJob = null
 
         // Final drain: read any remaining data in the ring buffer
-        val tempFile = tempPcmFile ?: return null
+        val tempFile = tempPcmFile ?: return false
         withContext(Dispatchers.IO) {
             BufferedOutputStream(FileOutputStream(tempFile, true), 65536).use { outputStream ->
                 val buffer = FloatArray(DRAIN_CHUNK_FLOATS)
@@ -193,24 +201,56 @@ class AudioRecorder(
         if (totalFloatsWritten == 0L) {
             tempFile.delete()
             Log.w(TAG, "Recording produced no audio data")
-            return null
+            pendingMidi = null
+            tempPcmFile = null
+            return false
         }
+        return true
+    }
 
-        // Encode to WAV
-        val wavPath = encodeToWav(tempFile)
-        if (wavPath != null && midiBytes != null) {
-            withContext(Dispatchers.IO) {
-                val pending = File.createTempFile("pyano_pending_", ".mid", context.cacheDir)
-                pending.writeBytes(midiBytes)
-                RecordingBundleFiles.saveMidi(File(wavPath)) { staging -> pending.copyTo(staging, overwrite = true) }
-                pending.delete()
-            }
+    suspend fun saveTake(onSaved: (String) -> Unit = {}): String? {
+        val tempFile = tempPcmFile ?: return null
+        if (!finishTake()) return null
+        val midiBytes = pendingMidi
+        val wavPath = pendingWav ?: withContext(Dispatchers.IO) {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+            File(recordingsDirectory(), "Pyano_${timestamp}_${java.util.UUID.randomUUID()}.wav").absolutePath
+        }.also { pendingWav = it }
+        withContext(Dispatchers.IO) {
+            val wav = File(wavPath)
+            val staging = File(wavPath + ".part")
+            try {
+                if (!wav.exists()) {
+                    check(encodeToWav(tempFile, staging) != null) { "Could not encode take" }
+                    if (midiBytes != null && !RecordingBundleFiles.midi(wav).exists()) {
+                        RecordingBundleFiles.saveMidi(wav) { it.writeBytes(midiBytes) }
+                    }
+                    onSaved(wavPath)
+                    check(staging.renameTo(wav)) { "Could not publish take" }
+                } else onSaved(wavPath)
+            } finally { staging.delete() }
         }
-        tempFile.delete()
-        totalFloatsWritten = 0
+        discardTake(saved = true)
 
         Log.i(TAG, "Recording saved: $wavPath")
         return wavPath
+    }
+
+    suspend fun discardTake(saved: Boolean = false) = withContext(Dispatchers.IO) {
+        if (!saved) pendingWav?.let {
+            val wav = File(it)
+            if (wav.exists()) RecordingBundleFiles.delete(wav)
+            else {
+                val midi = RecordingBundleFiles.midi(wav)
+                check(!midi.exists() || midi.delete()) { "Could not discard MIDI" }
+            }
+        }
+        val file = tempPcmFile
+        check(file == null || !file.exists() || file.delete()) { "Could not remove temporary take; try again" }
+        tempPcmFile = null
+        pendingMidi = null
+        pendingWav = null
+        totalFloatsWritten = 0
     }
 
     /** Read one chunk from ring buffer and write raw PCM floats to stream. Returns floats written. */
@@ -230,19 +270,12 @@ class AudioRecorder(
         return read
     }
 
-    private suspend fun encodeToWav(pcmFile: File): String? = withContext(Dispatchers.IO) {
-        val pyanoDir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "Pyano"
-        )
-        pyanoDir.mkdirs()
-
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val wavFile = File(pyanoDir, "Pyano_$timestamp.wav")
-
+    private suspend fun encodeToWav(pcmFile: File, wavFile: File): String? = withContext(Dispatchers.IO) {
+        check(wavFile.parentFile?.let { it.mkdirs() || it.isDirectory } == true) { "Could not create recordings directory" }
         try {
             FileInputStream(pcmFile).use { pcmInput ->
                 RandomAccessFile(wavFile, "rw").use { wavOutput ->
+                    wavOutput.setLength(0)
                     val floatBuffer = ByteBuffer.allocate(DRAIN_CHUNK_FLOATS * 4)
                         .order(ByteOrder.LITTLE_ENDIAN)
 
@@ -338,10 +371,7 @@ class AudioRecorder(
     }
 
     fun getSavedRecordings(): List<RecordingInfo> {
-        val pyanoDir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "Pyano"
-        )
+        val pyanoDir = recordingsDirectory()
         if (!pyanoDir.exists()) return emptyList()
 
         return pyanoDir.listFiles()

@@ -2,48 +2,97 @@
 package com.pyano.sync
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import java.net.URI
-import java.util.UUID
 
-class CloudCredentialsStore(context: Context) {
-    private val prefs = context.getSharedPreferences("pyano_cloud_credentials", Context.MODE_PRIVATE)
+internal interface CredentialStorage {
+    fun read(key: String): String?
+    fun commit(values: Map<String, String>): Boolean
+}
 
-    fun save(endpoint: String, ownerId: String, token: String): String {
+internal interface CredentialCipher {
+    fun encrypt(token: String): Pair<String, String>
+    fun decrypt(iv: String, encrypted: String): String
+}
+
+class CloudCredentialsStore internal constructor(private val storage: CredentialStorage, private val cipher: CredentialCipher) {
+    constructor(context: Context) : this(
+        PreferenceCredentialStorage(context.getSharedPreferences("pyano_cloud_credentials", Context.MODE_PRIVATE)), KeystoreCredentialCipher()
+    )
+
+    fun save(endpoint: String, ownerId: String, token: String): String = synchronized(LOCK) {
         validateCloudSettings(endpoint, ownerId, token)
         val profileId = UUID.randomUUID().toString()
+        val (iv, encrypted) = cipher.encrypt(token.trim())
+        check(storage.commit(mapOf(
+            "$profileId.endpoint" to endpoint.trim().trimEnd('/'), "$profileId.ownerId" to ownerId.trim(),
+            "$profileId.tokenIv" to iv, "$profileId.tokenCiphertext" to encrypted,
+            "currentProfileId" to profileId, "selectedMode" to "cloud",
+            "selectedEndpoint" to endpoint.trim().trimEnd('/'), "selectedOwnerId" to ownerId.trim()
+        ))) { "Could not save cloud settings" }
+        profileId
+    }
+
+    fun selectLocal(endpoint: String, ownerId: String) = synchronized(LOCK) {
+        check(storage.commit(mapOf("selectedMode" to "local", "selectedEndpoint" to endpoint, "selectedOwnerId" to ownerId))) {
+            "Could not save local settings"
+        }
+    }
+
+    fun selection(): CloudSelection? = synchronized(LOCK) {
+        val mode = storage.read("selectedMode") ?: return@synchronized null
+        CloudSelection(mode == "cloud", storage.read("selectedEndpoint").orEmpty(), storage.read("selectedOwnerId").orEmpty())
+    }
+
+    fun currentProfileId(): String? = synchronized(LOCK) { storage.read("currentProfileId") }
+
+    fun load(profileId: String): CloudCredentials? = synchronized(LOCK) {
+        runCatching {
+            val endpoint = storage.read("$profileId.endpoint") ?: return@synchronized null
+            val ownerId = storage.read("$profileId.ownerId") ?: return@synchronized null
+            val iv = storage.read("$profileId.tokenIv") ?: return@synchronized null
+            val encrypted = storage.read("$profileId.tokenCiphertext") ?: return@synchronized null
+            CloudCredentials(endpoint, ownerId, cipher.decrypt(iv, encrypted))
+        }.getOrNull()
+    }
+
+    companion object { private val LOCK = Any() }
+}
+
+internal class PreferenceCredentialStorage(private val prefs: SharedPreferences) : CredentialStorage {
+    override fun read(key: String): String? = prefs.getString(key, null)
+    override fun commit(values: Map<String, String>): Boolean {
+        val old = prefs.all.mapValues { it.value as String }
+        val editor = prefs.edit()
+        values.forEach { (key, value) -> editor.putString(key, value) }
+        if (editor.commit()) return true
+        val rollback = prefs.edit().clear()
+        old.forEach { (key, value) -> rollback.putString(key, value) }
+        rollback.commit()
+        return false
+    }
+}
+
+private class KeystoreCredentialCipher : CredentialCipher {
+    override fun encrypt(token: String): Pair<String, String> {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        prefs.edit()
-            .putString("$profileId.endpoint", endpoint.trim().trimEnd('/'))
-            .putString("$profileId.ownerId", ownerId.trim())
-            .putString("$profileId.tokenIv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-            .putString("$profileId.tokenCiphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-            .putString("currentProfileId", profileId)
-            .apply()
-        return profileId
+        return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) to Base64.encodeToString(encrypted, Base64.NO_WRAP)
     }
 
-    fun currentProfileId(): String? = prefs.getString("currentProfileId", null)
-
-    fun load(profileId: String): CloudCredentials? {
-        val endpoint = prefs.getString("$profileId.endpoint", null) ?: return null
-        val ownerId = prefs.getString("$profileId.ownerId", null) ?: return null
-        val iv = prefs.getString("$profileId.tokenIv", null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
-        val encrypted = prefs.getString("$profileId.tokenCiphertext", null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
-        return runCatching {
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
-            CloudCredentials(endpoint, ownerId, String(cipher.doFinal(encrypted), Charsets.UTF_8))
-        }.getOrNull()
+    override fun decrypt(iv: String, encrypted: String): String {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+        return String(cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)), Charsets.UTF_8)
     }
 
     private fun key(): SecretKey {
@@ -65,14 +114,8 @@ class CloudCredentialsStore(context: Context) {
     }
 }
 
-fun validateCloudSettings(endpoint: String, ownerId: String, token: String) {
-    val uri = runCatching { URI(endpoint.trim().trimEnd('/')) }.getOrNull()
-    require(uri?.scheme == "https" && !uri.host.isNullOrBlank()) { "Cloud service must use HTTPS" }
-    require(uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null && uri.path.orEmpty() in setOf("", "/")) {
-        "Use a cloud address without credentials, query, or path"
-    }
-    require(ownerId.trim().matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) { "Enter the owner ID from device provisioning" }
-    require(token.isNotBlank() && token.none { it == '\r' || it == '\n' }) { "Enter the device token" }
+class CloudCredentials(val endpoint: String, val ownerId: String, val token: String) {
+    override fun toString() = "CloudCredentials(redacted)"
 }
 
-data class CloudCredentials(val endpoint: String, val ownerId: String, val token: String)
+data class CloudSelection(val cloud: Boolean, val endpoint: String, val ownerId: String)

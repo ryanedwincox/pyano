@@ -52,6 +52,14 @@ Because the Android `.so` files are not committed here, this repository itself d
 
 ---
 
+## Provisioning parser and scanner
+
+- **Gson:** `com.google.code.gson:gson:2.11.0`, Apache-2.0, https://github.com/google/gson
+- **ZXing Android Embedded:** `com.journeyapps:zxing-android-embedded:4.3.0`, Apache-2.0, https://github.com/journeyapps/zxing-android-embedded
+- **ZXing Core:** transitive `com.google.zxing:core:3.4.1`, Apache-2.0, https://github.com/zxing/zxing
+- These libraries are resolved by Gradle and shipped in the APK for strict JSON parsing and offline QR decoding.
+- Retain the Apache-2.0 license and upstream notices when redistributing these components.
+
 ## FluidR3_GM.sf2 (recommended SoundFont — NOT bundled)
 
 - **Name:** Fluid (R3) GM SoundFont (`FluidR3_GM.sf2`)

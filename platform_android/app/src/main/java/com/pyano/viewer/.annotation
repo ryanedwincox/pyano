@@ -1,0 +1,1 @@
+Concern: reads cached private score PDFs | Non-concern: audio processing or network | IO: (cached PDF) -> bounded reader state

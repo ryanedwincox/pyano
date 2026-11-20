@@ -2,10 +2,13 @@
 package com.pyano.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -15,12 +18,12 @@ fun LocalSyncPanel(
     ownerId: String,
     status: String,
     busy: Boolean,
-    onConfigure: (String, String, String, Boolean) -> Unit,
+    onConfigure: (String, String, String, Boolean, (Boolean) -> Unit) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     var address by remember(endpoint) { mutableStateOf(endpoint) }
     var token by remember { mutableStateOf("") }
-    var cloudMode by remember(cloud) { mutableStateOf(cloud) }
+    var cloudMode by rememberSaveable(cloud) { mutableStateOf(cloud) }
     var owner by remember(ownerId) { mutableStateOf(ownerId) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -35,6 +38,7 @@ fun LocalSyncPanel(
                     FilterChip(selected = cloudMode, onClick = { cloudMode = true }, label = { Text("Cloud") })
                     FilterChip(selected = !cloudMode, onClick = { cloudMode = false }, label = { Text("Local prototype") })
                 }
+                if (cloudMode) CloudProvisioningImport(busy = busy, onConfigure = onConfigure)
                 OutlinedTextField(
                     value = address, onValueChange = { address = it }, label = { Text(if (cloudMode) "Cloud address" else "Server address") },
                     singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth()
@@ -46,6 +50,7 @@ fun LocalSyncPanel(
                 OutlinedTextField(
                     value = token, onValueChange = { token = it }, label = { Text("Device token") },
                     visualTransformation = PasswordVisualTransformation(), singleLine = true,
+                    keyboardOptions = KeyboardOptions(autoCorrect = false, keyboardType = KeyboardType.Password),
                     enabled = !busy, modifier = Modifier.fillMaxWidth()
                 )
                 Text(
@@ -54,9 +59,9 @@ fun LocalSyncPanel(
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Button(enabled = !busy && address.isNotBlank() && token.isNotBlank() && (!cloudMode || owner.isNotBlank()), onClick = {
-                    onConfigure(address, owner, token, cloudMode)
-                    token = ""
-                    expanded = false
+                    onConfigure(address, owner, token, cloudMode) { saved ->
+                        if (saved) { token = ""; expanded = false }
+                    }
                 }) { Text("Use server") }
             }
         }
