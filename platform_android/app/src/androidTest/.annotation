@@ -1,0 +1,1 @@
+Concern: verifies on-device interface boundaries | Non-concern: native audio performance | IO: (UI actions) -> assertions

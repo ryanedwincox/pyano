@@ -1,7 +1,7 @@
 <!-- Concern: plans private tablet credential import | Non-concern: cloud admin implementation | IO: none -->
 # Issue #1: private provisioning import
 
-Status: active. Base: unattended/2026-11-19-tablet; implement before #2/#3.
+Status: done. Base: unattended/2026-11-19-tablet; implementation precedes #2/#3.
 The owner explicitly permits proceeding while cloud prerequisites build in parallel.
 Use cloud #9's specified v1 payload; do not edit another repository.
 
@@ -15,7 +15,8 @@ mocked org.json methods. All parse failures become fixed nonsecret messages.
 Require HTTPS origin only: host present, no credentials/path/query/fragment,
 no localhost, loopback, unspecified, link-local, or private IP literals; reject
 control characters and invalid ports. Do not perform DNS on the audio/UI thread.
-Keep the local prototype's explicit HTTP exception in its existing manual path.
+Apply these strict rules only to imports; preserve legacy manual/queued HTTPS
+validation and manual whitespace normalization. Local HTTP stays in local mode.
 Owner identifiers use [A-Za-z0-9][A-Za-z0-9_-]{0,127}. Require a nonempty bounded
 printable ASCII bearer token without whitespace/control characters; preserve its
 exact bytes. Do not invent a mandatory token prefix absent from cloud #9.
@@ -32,11 +33,13 @@ returns an actionable fixed message and leaves Paste JSON immediately available.
 Retain manual Cloud fields, Local mode, and the existing recording-sync panel.
 Both imports feed the same parser and a confirmation showing endpoint/owner only.
 Use a password-transformed paste field; never echo raw QR/JSON or tokens in errors.
-Use ordinary in-memory state only, never rememberSaveable, Bundles, logs, analytics,
+Keep secrets in ordinary memory only, never rememberSaveable, Bundles, logs, analytics,
 clipboard writes, or generated data-class toString values containing credentials.
 Clear raw text after parse and all pending credentials on dismiss/success/disposal.
 Backgrounding or rotation may safely discard pending confirmation and require
-reimport; no save occurs automatically. Scanner rotation/resume must return once
+reimport; no save occurs automatically. Save only nonsecret UI expansion/scan markers
+across host recreation and show retry guidance when a scan session was discarded.
+Scanner rotation/resume must return once
 through the activity-result API. Ignore late results after importer cancellation.
 PyanoApplication retains the shared ViewModel/engine; MainActivity starts the service
 and stops it when the last main activity finishes. Scanner navigation must never

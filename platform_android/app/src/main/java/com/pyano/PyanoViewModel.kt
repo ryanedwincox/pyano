@@ -250,10 +250,11 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val syncStatus = _syncStatus.asStateFlow()
     private val _syncBusy = MutableStateFlow(false)
     val syncBusy = _syncBusy.asStateFlow()
-    private var syncEndpoint = prefs.getString("syncEndpoint", "http://127.0.0.1:8765").orEmpty()
+    private val selectedSync = cloudCredentials.selection()
+    private var syncEndpoint = selectedSync?.endpoint ?: prefs.getString("syncEndpoint", "http://127.0.0.1:8765").orEmpty()
     private var syncToken = ""
-    private var syncCloud = prefs.getBoolean("syncCloud", false)
-    private var syncOwnerId = prefs.getString("syncOwnerId", "").orEmpty()
+    private var syncCloud = selectedSync?.cloud ?: prefs.getBoolean("syncCloud", false)
+    private var syncOwnerId = selectedSync?.ownerId ?: prefs.getString("syncOwnerId", "").orEmpty()
     private var syncProfileId = cloudCredentials.currentProfileId()
     private var finishingRecording = false
     val recordingSyncEndpoint get() = syncEndpoint
@@ -264,25 +265,31 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         observeCloudUploads()
     }
 
-    fun configureRecordingSync(endpoint: String, ownerId: String, token: String, cloud: Boolean) {
-        if (_syncBusy.value) return
-        if (cloud) {
-            val profile = runCatching { cloudCredentials.save(endpoint, ownerId, token.trim()) }
-            if (profile.isFailure) {
-                _syncStatus.value = profile.exceptionOrNull()?.message ?: "Invalid cloud settings"
-                return
+    fun configureRecordingSync(endpoint: String, ownerId: String, token: String, cloud: Boolean, onComplete: (Boolean) -> Unit) {
+        if (_syncBusy.value) { onComplete(false); return }
+        _syncBusy.value = true
+        viewModelScope.launch {
+            try {
+                val profile = withContext(Dispatchers.IO) {
+                    if (cloud) cloudCredentials.save(endpoint, ownerId, token.trim())
+                    else { cloudCredentials.selectLocal(endpoint.trim(), ownerId.trim()); syncProfileId }
+                }
+                syncProfileId = profile
+                syncEndpoint = endpoint.trim().trimEnd('/')
+                syncCloud = cloud
+                syncOwnerId = ownerId.trim()
+                syncToken = if (cloud) "" else token.trim()
+                _syncStatus.value = if (cloud) "Cloud configured; uploads survive app restarts" else "Local server configured; select a take to upload"
+                onComplete(true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _syncStatus.value = "Could not save settings. Check the provisioning values and try again."
+                onComplete(false)
+            } finally {
+                _syncBusy.value = false
             }
-            syncProfileId = profile.getOrThrow()
         }
-        syncEndpoint = endpoint.trim()
-        syncCloud = cloud
-        syncOwnerId = ownerId.trim()
-        if (cloud) syncToken = "" else {
-            syncToken = token.trim()
-        }
-        prefs.edit().putString("syncEndpoint", syncEndpoint).putBoolean("syncCloud", cloud)
-            .putString("syncOwnerId", syncOwnerId).apply()
-        _syncStatus.value = if (cloud) "Cloud configured; uploads survive app restarts" else "Local server configured; select a take to upload"
     }
 
     fun uploadRecording(recording: RecordingInfo) {
