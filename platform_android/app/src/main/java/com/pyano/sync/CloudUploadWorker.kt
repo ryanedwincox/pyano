@@ -2,6 +2,8 @@
 package com.pyano.sync
 
 import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.Data
@@ -9,7 +11,8 @@ import java.io.File
 
 class CloudUploadWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
-        val wav = inputData.getString(KEY_PATH)?.let(::File) ?: return Result.failure()
+        Log.i("PyanoCloudUpload", "Upload started job=$id attempt=$runAttemptCount")
+        val wav = inputData.getString(KEY_PATH)?.let(::File) ?: return failure("Queued recording path is missing")
         val durationMs = inputData.getLong(KEY_DURATION_MS, 0)
         val profileId = inputData.getString(KEY_PROFILE_ID) ?: return failure("Cloud profile is missing")
         val title = inputData.getString(KEY_TITLE) ?: return failure("Recording title is missing")
@@ -26,15 +29,24 @@ class CloudUploadWorker(context: Context, parameters: WorkerParameters) : Corout
                 credentials.ownerId,
                 credentials.token,
             )
+            Log.i("PyanoCloudUpload", "Upload completed job=$id")
             Result.success(Data.Builder().putString(KEY_SNAPSHOT_PATH, wav.absolutePath).build())
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: CloudSyncException) {
+            Log.w("PyanoCloudUpload", "Upload rejected job=$id attempt=$runAttemptCount retryable=${error.retryable}: ${error.message}")
             if (error.retryable && runAttemptCount < 5) Result.retry() else failure(error.message ?: "Cloud upload failed")
         } catch (error: Exception) {
+            Log.w("PyanoCloudUpload", "Upload failed job=$id attempt=$runAttemptCount type=${error.javaClass.simpleName}")
             if (runAttemptCount < 5) Result.retry() else failure(error.message ?: "Cloud upload failed")
         }
     }
 
-    private fun failure(message: String) = Result.failure(Data.Builder().putString(KEY_ERROR, message).build())
+    private fun failure(message: String): Result {
+        val detail = boundedUploadError(message)
+        Log.e("PyanoCloudUpload", "Upload stopped job=$id: $detail")
+        return Result.failure(Data.Builder().putString(KEY_ERROR, detail).build())
+    }
 
     companion object {
         const val KEY_PATH = "recordingPath"

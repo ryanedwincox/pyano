@@ -30,14 +30,15 @@ class CloudSyncClient(private val cache: File) {
         token: String,
     ) {
         val base = validateSettings(endpoint, ownerId, token)
+        val midi = RecordingBundleFiles.midi(wav).takeIf { it.isFile }
+        val recordingId = stableId(wav, midi)
+        if (isComplete(base, token, recordingId)) return
         val work = File(cache, "cloud-${java.util.UUID.randomUUID()}")
         check(work.mkdirs()) { "Could not prepare cloud upload" }
         try {
-            val audio = File(work, "audio.m4a")
-            CompressedAudio.encode(wav, audio)
+            val audio = File(wav.parentFile, "upload-audio.m4a")
+            persistUploadAudio(audio) { CompressedAudio.encode(wav, it) }
             currentCoroutineContext().ensureActive()
-            val midi = RecordingBundleFiles.midi(wav).takeIf { it.isFile }
-            val recordingId = stableId(wav, midi)
             val assets = listOfNotNull(
                 Asset("audio", "audio/mp4", audio, sha256(audio)),
                 midi?.let { Asset("midi", "audio/midi", it, sha256(it)) },
@@ -52,13 +53,14 @@ class CloudSyncClient(private val cache: File) {
                 .put("audioMidiOffsetMs", 0)
                 .put("assets", JSONArray(assets.map { it.json() }))
             val session = postJson(base.resolve("/api/v1/recordings"), token, body, recordingId)
-            if (session.optString("state") == "completed") return
+            if (session.optString("state") in setOf("complete", "completed")) return
             val uploadId = session.getString("uploadId")
             val partSize = validateUploadPartSize(session.getInt("partSizeBytes"))
             val remoteAssets = session.getJSONArray("assets")
             assets.forEach { asset ->
                 val remote = (0 until remoteAssets.length()).map { remoteAssets.getJSONObject(it) }
                     .first { it.getString("role") == asset.role }
+                if (remote.optBoolean("uploaded")) return@forEach
                 val uploaded = remote.getJSONArray("uploadedParts").let { array ->
                     (0 until array.length()).map { array.getInt(it) }.toSet()
                 }
@@ -67,6 +69,20 @@ class CloudSyncClient(private val cache: File) {
             postJson(base.resolve("/api/v1/uploads/$uploadId/complete"), token, JSONObject(), null)
         } finally {
             work.deleteRecursively()
+        }
+    }
+
+    private fun isComplete(base: URI, token: String, recordingId: String): Boolean {
+        val connection = base.resolve("/api/v1/recordings/$recordingId").toURL().openConnection() as HttpURLConnection
+        try {
+            configure(connection, token)
+            if (connection.responseCode == 404) return false
+            requireSuccess(connection)
+            val receipt = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            check(receipt.getString("recordingId") == recordingId) { "Unexpected cloud recording receipt" }
+            return receipt.getString("state") == "complete"
+        } finally {
+            connection.disconnect()
         }
     }
 
@@ -156,7 +172,11 @@ class CloudSyncClient(private val cache: File) {
 
     private fun requireSuccess(connection: HttpURLConnection) {
         if (connection.responseCode in 200..299) return
-        val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val detail = connection.errorStream?.bufferedReader()?.use {
+            val buffer = CharArray(4096)
+            val count = it.read(buffer)
+            if (count > 0) String(buffer, 0, count) else ""
+        }.orEmpty()
         val message = runCatching { JSONObject(detail).getJSONObject("error").getString("message") }.getOrNull()
         val status = connection.responseCode
         throw CloudSyncException(message ?: "Cloud upload failed (HTTP $status)", status == 408 || status == 429 || status >= 500)
