@@ -19,6 +19,7 @@ private enum class AppTab(val title: String) {
     Metronome("Metronome"),
     Loops("Loops"),
     Recorder("Recorder"),
+    Scores("Scores"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,6 +92,7 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
                 AppTab.Metronome.ordinal -> MetronomeTab(viewModel)
                 AppTab.Loops.ordinal -> LoopStationTab(viewModel)
                 AppTab.Recorder.ordinal -> RecorderTab(viewModel)
+                AppTab.Scores.ordinal -> ScoreLibraryTab(viewModel.scoreLibrary)
             }
         }
     }

@@ -1,7 +1,7 @@
 <!-- Concern: plans private offline score caching | Non-concern: PDF rendering or cloud administration | IO: none -->
 # Issue #2: private offline score library
 
-Status: active. Base: 945467f; build before viewer #3.
+Status: done on the reviewed run branch. Base: 945467f; build before viewer #3.
 Owner directs proceeding assuming concurrent cloud prerequisites complete. Cloud #13
 specifies semantics but currently published main has no score wire contract. Keep
 all provisional wire choices in one client/parser and document them for integration.

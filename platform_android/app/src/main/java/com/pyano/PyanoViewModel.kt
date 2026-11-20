@@ -35,6 +35,9 @@ import com.pyano.midi.MidiDeviceManager
 import com.pyano.midi.MidiEventHandler
 import com.pyano.midi.MidiRecordingListener
 import com.pyano.sync.LocalSyncClient
+import com.pyano.scores.ScoreLibraryController
+import com.pyano.scores.ScoreProfile
+import com.pyano.scores.scoreCacheRoot
 import com.pyano.sync.CloudCredentialsStore
 import com.pyano.sync.CloudUploadWorker
 import com.pyano.sync.CloudUploadQueue
@@ -261,7 +264,22 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val cloudSyncEnabled get() = syncCloud
     val cloudSyncOwnerId get() = syncOwnerId
 
+    val scoreLibrary = ScoreLibraryController(scoreCacheRoot(application.noBackupFilesDir), viewModelScope)
+    private var scoreSelectionGeneration = 0
+
+    private fun updateScoreProfile() {
+        val generation = ++scoreSelectionGeneration
+        val profileId = syncProfileId
+        scoreLibrary.select(null)
+        if (!syncCloud || profileId == null) return
+        viewModelScope.launch {
+            val credentials = withContext(Dispatchers.IO) { cloudCredentials.load(profileId) }
+            if (generation == scoreSelectionGeneration) scoreLibrary.select(credentials?.let { ScoreProfile(profileId, it) })
+        }
+    }
+
     init {
+        updateScoreProfile()
         observeCloudUploads()
     }
 
@@ -280,6 +298,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 syncOwnerId = ownerId.trim()
                 syncToken = if (cloud) "" else token.trim()
                 _syncStatus.value = if (cloud) "Cloud configured; uploads survive app restarts" else "Local server configured; select a take to upload"
+                updateScoreProfile()
                 onComplete(true)
             } catch (e: CancellationException) {
                 throw e
