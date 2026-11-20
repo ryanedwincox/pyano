@@ -1,7 +1,7 @@
 <!-- Concern: plans private offline PDF reading | Non-concern: cloud APIs or audio processing | IO: none -->
 # Issue #3: full-screen offline score viewer
 
-Status: active. Base: bc1eb76; reviewed cache prerequisite #2 is on this run branch.
+Status: done. Base: bc1eb76; reviewed cache prerequisite #2 is on this run branch.
 Open downloaded versions only; no network, annotations, pedal input or remote edits.
 
 ## Navigation and ownership

@@ -264,12 +264,17 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     val cloudSyncEnabled get() = syncCloud
     val cloudSyncOwnerId get() = syncOwnerId
 
+    val scoreViewer = com.pyano.viewer.ScoreViewerController(
+        viewModelScope, com.pyano.viewer.ReadingStateStore(java.io.File(application.noBackupFilesDir, "score-reading"))
+    )
+    fun openScore(score: com.pyano.scores.Score) { scoreLibrary.viewerSource(score)?.let(scoreViewer::open) }
     val scoreLibrary = ScoreLibraryController(scoreCacheRoot(application.noBackupFilesDir), viewModelScope)
     private var scoreSelectionGeneration = 0
 
     private fun updateScoreProfile() {
         val generation = ++scoreSelectionGeneration
         val profileId = syncProfileId
+        scoreViewer.clearProfile()
         scoreLibrary.select(null)
         if (!syncCloud || profileId == null) return
         viewModelScope.launch {
@@ -1457,6 +1462,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        scoreViewer.close()
         super.onCleared()
         if (audioRecorder.isRecording) {
             audioRecorder.cancelRecording()

@@ -92,6 +92,15 @@ class ScoreCache(
         file(score).takeIf { saved.cached.any { entry -> entry.identity == score.identity } && verify(it, score) }
     }
 
+    suspend fun <T> openReadLease(score: Score, open: (File) -> T): T = lock.withLock {
+        val saved = readManifest()
+        val target = file(score)
+        if (saved.cached.none { it.identity == score.identity } || !verify(target, score)) {
+            throw ScoreFailure("Local PDF is missing or corrupt. Download it again before opening.")
+        }
+        open(target)
+    }
+
     private fun file(score: Score) = File(directory, "${score.identity}.pdf")
 
     private fun readManifest(): ScoreManifest {

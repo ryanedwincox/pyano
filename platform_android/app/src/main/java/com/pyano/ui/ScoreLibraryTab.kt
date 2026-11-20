@@ -13,13 +13,13 @@ import com.pyano.scores.ScoreLibraryController
 import com.pyano.scores.ScoreLibraryState
 
 @Composable
-fun ScoreLibraryTab(controller: ScoreLibraryController) {
+fun ScoreLibraryTab(controller: ScoreLibraryController, onOpen: (Score) -> Unit = {}) {
     val state by controller.state.collectAsState()
     DisposableEffect(controller) {
         controller.reload()
         onDispose { controller.cancel() }
     }
-    ScoreLibraryContent(state, controller::refresh, controller::download, controller::remove, controller::cancel)
+    ScoreLibraryContent(state, controller::refresh, controller::download, controller::remove, controller::cancel, onOpen)
 }
 
 @Composable
@@ -29,6 +29,7 @@ fun ScoreLibraryContent(
     onDownload: (Score) -> Unit,
     onRemove: (Score) -> Unit,
     onCancel: () -> Unit,
+    onOpen: (Score) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Private scores", style = MaterialTheme.typography.titleLarge)
@@ -49,6 +50,7 @@ fun ScoreLibraryContent(
                         Text(row.score.title, style = MaterialTheme.typography.titleMedium)
                         Text(row.status, style = MaterialTheme.typography.bodySmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (row.downloaded) Button(onClick = { onOpen(row.score) }, enabled = !state.busy) { Text("Open PDF") }
                             if (!row.downloaded && row.canDownload) Button(onClick = { onDownload(row.score) }, enabled = !state.busy) {
                                 Text("Download PDF")
                             }

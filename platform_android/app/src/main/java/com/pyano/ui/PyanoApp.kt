@@ -25,6 +25,11 @@ private enum class AppTab(val title: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
+    val viewerState by viewModel.scoreViewer.state.collectAsState()
+    if (viewerState.source != null) {
+        ScoreViewerScreen(viewModel.scoreViewer)
+        return
+    }
     // Clamped: a saved index can point past the end (Devices used to be a tab).
     val selectedTab = viewModel.selectedTab.collectAsState().value
         .takeIf { it in AppTab.entries.indices } ?: AppTab.Synth.ordinal
@@ -92,7 +97,7 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
                 AppTab.Metronome.ordinal -> MetronomeTab(viewModel)
                 AppTab.Loops.ordinal -> LoopStationTab(viewModel)
                 AppTab.Recorder.ordinal -> RecorderTab(viewModel)
-                AppTab.Scores.ordinal -> ScoreLibraryTab(viewModel.scoreLibrary)
+                AppTab.Scores.ordinal -> ScoreLibraryTab(viewModel.scoreLibrary, viewModel::openScore)
             }
         }
     }

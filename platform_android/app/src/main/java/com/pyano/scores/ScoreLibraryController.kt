@@ -30,6 +30,16 @@ class ScoreLibraryController(
         if (selected != null) reload()
     }
 
+    fun viewerSource(score: Score): com.pyano.viewer.ViewerSource? {
+        val selected = profile ?: return null
+        val target = cache ?: return null
+        return com.pyano.viewer.ViewerSource(selected.namespace, score) {
+            target.openReadLease(score) { file ->
+                com.pyano.viewer.AndroidPdfDocumentSession.open(android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY))
+            }
+        }
+    }
+
     fun reload() = run("Offline library loaded. Refresh to check Cloud.") { _, _ -> }
     fun refresh() = run("Cloud library refreshed; existing offline copies were kept.") { selected, target ->
         target.updateRemote(client.list(selected))
