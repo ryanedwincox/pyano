@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.pyano.PyanoViewModel
+import com.pyano.sync.RecordingCloudState
 import com.pyano.audio.RecordingInfo
 import java.io.File
 import java.text.SimpleDateFormat
@@ -40,6 +41,9 @@ import java.util.Locale
 
 @Composable
 fun RecorderTab(viewModel: PyanoViewModel) {
+    val pendingTake by viewModel.pendingTake.collectAsState()
+    val takeBusy by viewModel.takeBusy.collectAsState()
+    val cloudStates by viewModel.recordingCloudStates.collectAsState()
     val isRecording by viewModel.isAudioRecording.collectAsState()
     val durationSec by viewModel.recordingDurationSec.collectAsState()
     val recordings by viewModel.savedRecordings.collectAsState()
@@ -72,7 +76,7 @@ fun RecorderTab(viewModel: PyanoViewModel) {
             durationSec = durationSec,
             outputLevel = outputLevel,
             onRecord = { viewModel.startAudioRecording() },
-            enabled = !syncBusy,
+            enabled = !syncBusy && !pendingTake && !takeBusy,
             onStop = { viewModel.stopAudioRecording() }
         )
 
@@ -91,6 +95,7 @@ fun RecorderTab(viewModel: PyanoViewModel) {
         // --- Saved Recordings ---
         RecordingsListCard(
             recordings = recordings,
+            cloudStates = cloudStates,
             onRename = { path, newName -> viewModel.renameRecording(path, newName) },
             onDelete = { viewModel.deleteRecording(it) },
             onMaster = { viewModel.openMastering(it) },
@@ -222,6 +227,7 @@ private fun RecordControlCard(
 @Composable
 private fun RecordingsListCard(
     recordings: List<RecordingInfo>,
+    cloudStates: Map<String, RecordingCloudState>,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onMaster: (RecordingInfo) -> Unit,
@@ -262,6 +268,7 @@ private fun RecordingsListCard(
                     items(recordings, key = { it.path }) { recording ->
                         RecordingRow(
                             recording = recording,
+                            cloudState = cloudStates[recording.path] ?: RecordingCloudState.PENDING,
                             onRename = { newName -> onRename(recording.path, newName) },
                             onDelete = { onDelete(recording.path) },
                             onMaster = { onMaster(recording) },
@@ -278,6 +285,7 @@ private fun RecordingsListCard(
 @Composable
 private fun RecordingRow(
     recording: RecordingInfo,
+    cloudState: RecordingCloudState,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
     onMaster: () -> Unit,
@@ -381,9 +389,7 @@ private fun RecordingRow(
             }
         }
 
-        IconButton(onClick = onUpload, enabled = enabled) {
-            Icon(Icons.Default.CloudUpload, contentDescription = "Upload compressed audio and MIDI")
-        }
+        RecordingCloudIndicator(cloudState, enabled, onUpload)
 
         // Master button
         IconButton(onClick = onMaster, enabled = enabled) {

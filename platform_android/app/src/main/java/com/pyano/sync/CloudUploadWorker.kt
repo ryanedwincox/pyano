@@ -29,6 +29,7 @@ class CloudUploadWorker(context: Context, parameters: WorkerParameters) : Corout
                 credentials.ownerId,
                 credentials.token,
             )
+            inputData.getString(KEY_RECORDING_ID)?.let { RecordingCloudStatus(applicationContext).complete(it) }
             Log.i("PyanoCloudUpload", "Upload completed job=$id")
             Result.success(Data.Builder().putString(KEY_SNAPSHOT_PATH, wav.absolutePath).build())
         } catch (error: CancellationException) {
@@ -49,6 +50,7 @@ class CloudUploadWorker(context: Context, parameters: WorkerParameters) : Corout
     }
 
     companion object {
+        const val KEY_RECORDING_ID = "recordingId"
         const val KEY_PATH = "recordingPath"
         const val KEY_DURATION_MS = "durationMs"
         const val KEY_PROFILE_ID = "profileId"

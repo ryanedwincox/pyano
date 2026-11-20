@@ -25,6 +25,13 @@ private enum class AppTab(val title: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
+    val pendingTake by viewModel.pendingTake.collectAsState()
+    val takeBusy by viewModel.takeBusy.collectAsState()
+    val takeStatus by viewModel.syncStatus.collectAsState()
+    if (pendingTake) SaveTakeDialog(
+        takeBusy, { viewModel.resolveTake(true) }, { viewModel.resolveTake(false) },
+        takeStatus.takeIf { it.startsWith("Could not finish") }
+    )
     val viewerState by viewModel.scoreViewer.state.collectAsState()
     if (viewerState.source != null) {
         ScoreViewerScreen(viewModel.scoreViewer)
