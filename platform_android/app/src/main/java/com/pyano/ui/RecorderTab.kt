@@ -47,6 +47,8 @@ fun RecorderTab(viewModel: PyanoViewModel, onServerSettings: () -> Unit = {}) {
     val takeBusy by viewModel.takeBusy.collectAsState()
     val cloudStates by viewModel.recordingCloudStates.collectAsState()
     val isRecording by viewModel.isAudioRecording.collectAsState()
+    val countdown by viewModel.recordingCountdownSeconds.collectAsState()
+    val recordingOwner = recordingCountdownOwner(viewModel)
     val durationSec by viewModel.recordingDurationSec.collectAsState()
     val recordings by viewModel.savedRecordings.collectAsState()
     val outputLevel by viewModel.outputLevel.collectAsState()
@@ -76,9 +78,10 @@ fun RecorderTab(viewModel: PyanoViewModel, onServerSettings: () -> Unit = {}) {
         // --- Record Controls ---
         RecordControlCard(
             isRecording = isRecording,
+            countdown = countdown,
             durationSec = durationSec,
             outputLevel = outputLevel,
-            onRecord = { viewModel.startAudioRecording() },
+            onRecord = { viewModel.startAudioRecording(owner = recordingOwner) },
             enabled = !syncBusy && !pendingTake && !takeBusy,
             onStop = { viewModel.stopAudioRecording() }
         )
@@ -98,7 +101,7 @@ fun RecorderTab(viewModel: PyanoViewModel, onServerSettings: () -> Unit = {}) {
             onDelete = { viewModel.deleteRecording(it) },
             onMaster = { viewModel.openMastering(it) },
             onUpload = viewModel::uploadRecording,
-            enabled = !syncBusy && !isRecording,
+            enabled = !syncBusy && !isRecording && countdown == 0,
             modifier = Modifier.weight(1f)
         )
     }
@@ -107,6 +110,7 @@ fun RecorderTab(viewModel: PyanoViewModel, onServerSettings: () -> Unit = {}) {
 @Composable
 private fun RecordControlCard(
     isRecording: Boolean,
+    countdown: Int,
     durationSec: Int,
     outputLevel: Float,
     onRecord: () -> Unit,
@@ -157,7 +161,7 @@ private fun RecordControlCard(
                 )
             } else {
                 Text(
-                    text = "Tap to record",
+                    text = if (countdown > 0) "Get ready" else "Tap to record",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -166,7 +170,9 @@ private fun RecordControlCard(
             Spacer(modifier = Modifier.height(20.dp))
 
             // Record / Stop button
-            if (isRecording) {
+            if (countdown > 0) {
+                RecordingCountdownDisplay(countdown, Modifier.size(72.dp))
+            } else if (isRecording) {
                 // Pulsing animation
                 val infiniteTransition = rememberInfiniteTransition(label = "recordPulse")
                 val pulseScale by infiniteTransition.animateFloat(

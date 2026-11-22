@@ -41,7 +41,7 @@ class ScoreLibraryController(
     }
 
     fun reload() = run("") { _, _ -> }
-    fun refresh() = run("Cloud library refreshed; existing offline copies were kept.") { selected, target ->
+    fun refresh() = run("") { selected, target ->
         target.updateRemote(client.list(selected))
     }
     fun download(score: Score) = run("Score is available offline.") { selected, target ->

@@ -14,7 +14,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
@@ -32,6 +33,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -44,7 +47,7 @@ import kotlin.math.max
 private data class PresentedPage(val page: Int, val bitmap: Bitmap)
 
 @Composable
-fun ScoreViewerScreen(controller: ScoreViewerController, recording: Boolean = false, recordEnabled: Boolean = true, onRecord: (() -> Unit)? = null) {
+fun ScoreViewerScreen(controller: ScoreViewerController, recording: Boolean = false, recordEnabled: Boolean = true, countdown: Int = 0, onRecord: (() -> Unit)? = null) {
     val state by controller.state.collectAsState()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val context = LocalContext.current.applicationContext
@@ -63,7 +66,7 @@ fun ScoreViewerScreen(controller: ScoreViewerController, recording: Boolean = fa
         lifecycle.addObserver(observer); context.registerComponentCallbacks(memory)
         onDispose { lifecycle.removeObserver(observer); context.unregisterComponentCallbacks(memory); controller.unregisterHost(host) }
     }
-    ScoreViewerContent(state, controller::close, controller::page, controller::transform, controller::retry, recording, recordEnabled, onRecord)
+    ScoreViewerContent(state, controller::close, controller::page, controller::transform, controller::retry, recording, recordEnabled, countdown, onRecord)
 }
 
 @Composable
@@ -75,6 +78,7 @@ fun ScoreViewerContent(
     onRetry: () -> Unit,
     recording: Boolean = false,
     recordEnabled: Boolean = true,
+    countdown: Int = 0,
     onRecord: (() -> Unit)? = null,
 ) {
     val reading = state.reading
@@ -98,10 +102,14 @@ fun ScoreViewerContent(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to scores") }
                 Text(state.source?.score?.title.orEmpty(), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                if (onRecord != null) IconButton(onClick = onRecord, enabled = recordEnabled) {
-                    Icon(if (recording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                        contentDescription = if (recording) "Stop recording" else "Start recording",
-                        tint = MaterialTheme.colorScheme.error)
+                if (onRecord != null) {
+                    if (countdown > 0) RecordingCountdownDisplay(countdown, Modifier.size(48.dp))
+                    else FilledIconButton(onClick = onRecord, enabled = recordEnabled,
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                        if (recording) Icon(Icons.Default.Stop, contentDescription = "Stop recording")
+                        else Box(Modifier.size(16.dp).background(MaterialTheme.colorScheme.onError, CircleShape)
+                            .semantics { contentDescription = "Start recording" })
+                    }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

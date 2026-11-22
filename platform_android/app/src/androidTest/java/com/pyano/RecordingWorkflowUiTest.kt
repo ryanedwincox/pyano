@@ -123,12 +123,25 @@ class RecordingWorkflowUiTest {
         val recording = androidx.compose.runtime.mutableStateOf(false)
         compose.setContent { MaterialTheme {
             com.pyano.ui.ScoreViewerContent(com.pyano.viewer.ScoreViewerState(), {}, {}, { _, _, _ -> }, {},
-                recording.value, true, { recording.value = !recording.value })
+                recording.value, true, onRecord = { recording.value = !recording.value })
         } }
         compose.onNodeWithContentDescription("Start recording").performClick()
         compose.onNodeWithContentDescription("Stop recording").performClick()
         compose.onNodeWithContentDescription("Start recording").assertIsDisplayed()
     }
+    @Test fun viewerCountdownReplacesRecordButton() {
+        val seconds = androidx.compose.runtime.mutableStateOf(5)
+        compose.setContent { MaterialTheme {
+            com.pyano.ui.ScoreViewerContent(com.pyano.viewer.ScoreViewerState(), {}, {}, { _, _, _ -> }, {},
+                countdown = seconds.value, onRecord = {})
+        } }
+        compose.onNodeWithText("5").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Start recording").assertDoesNotExist()
+        compose.runOnIdle { seconds.value = 0 }
+        compose.onNodeWithText("5").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Start recording").assertIsDisplayed()
+    }
+
     @Test fun uploadWarningKeepsDetailsBehindDialog() {
         val error = "Audio checksum did not match the declared asset"
         var cleared = 0

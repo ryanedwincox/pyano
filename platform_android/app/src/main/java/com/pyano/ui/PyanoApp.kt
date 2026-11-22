@@ -41,10 +41,12 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (viewerState.source != null) {
                 val recording by viewModel.isAudioRecording.collectAsState()
+                val countdown by viewModel.recordingCountdownSeconds.collectAsState()
+                val recordingOwner = recordingCountdownOwner(viewModel)
                 val syncBusy by viewModel.syncBusy.collectAsState()
-                ScoreViewerScreen(viewModel.scoreViewer, recording, !pendingTake && !takeBusy && !syncBusy) {
+                ScoreViewerScreen(viewModel.scoreViewer, recording, !pendingTake && !takeBusy && !syncBusy, countdown) {
                     if (recording) viewModel.stopAudioRecording()
-                    else viewModel.startAudioRecording(viewerState.source?.score?.title)
+                    else viewModel.startAudioRecording(viewerState.source?.score?.title, recordingOwner)
                 }
             }
             else WorkstationTabs(viewModel, onOpenApps)

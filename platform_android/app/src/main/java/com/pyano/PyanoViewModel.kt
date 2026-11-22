@@ -541,6 +541,9 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isAudioRecording = MutableStateFlow(false)
     val isAudioRecording = _isAudioRecording.asStateFlow()
+    private val recordingCountdown = com.pyano.audio.RecordingCountdown(viewModelScope)
+    val recordingCountdownSeconds = recordingCountdown.seconds
+    fun cancelRecordingCountdown(owner: Any? = null) = recordingCountdown.cancel(owner)
 
     private val _recordingDurationSec = MutableStateFlow(0)
     val recordingDurationSec = _recordingDurationSec.asStateFlow()
@@ -1473,17 +1476,25 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     var suggestedTakeName: String = ""
         private set
 
-    fun startAudioRecording(scoreTitle: String? = null) {
-        if (_isAudioRecording.value || _syncBusy.value || finishingRecording || _pendingTake.value || _takeBusy.value) return
-        _takeNameLocked.value = false
-        _takeError.value = null
-        suggestedTakeName = com.pyano.audio.RecordingNames.suggestion(scoreTitle)
-        audioRecorder.startRecording(viewModelScope)
-        _isAudioRecording.value = true
-        _recordingDurationSec.value = 0
+    fun startAudioRecording(scoreTitle: String? = null, owner: Any? = null) {
+        if (!canStartAudioRecording()) return
+        recordingCountdown.start(owner) {
+            if (canStartAudioRecording()) {
+                _takeNameLocked.value = false
+                _takeError.value = null
+                suggestedTakeName = com.pyano.audio.RecordingNames.suggestion(scoreTitle)
+                audioRecorder.startRecording(viewModelScope)
+                _isAudioRecording.value = true
+                _recordingDurationSec.value = 0
+            }
+        }
     }
 
+    private fun canStartAudioRecording() =
+        !_isAudioRecording.value && !_syncBusy.value && !finishingRecording && !_pendingTake.value && !_takeBusy.value
+
     fun stopAudioRecording() {
+        cancelRecordingCountdown()
         if (!audioRecorder.isRecording || finishingRecording) return
         finishingRecording = true
         _takeError.value = null
@@ -1762,6 +1773,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        cancelRecordingCountdown()
         disconnectMidi()
         scoreViewer.close()
         super.onCleared()
