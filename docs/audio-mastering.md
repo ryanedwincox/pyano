@@ -5,15 +5,17 @@ The recording's mastering dialog opens on **Simple**. It silently analyzes the
 whole source, starting with loudness matching enabled at −18 LUFS, Balanced
 compression and a final −1 dBFS sample-peak limiter. Preview and export stay
 unavailable until analysis for the current settings finishes. Originals remain
-unchanged; export creates a new `_final[N].wav` beside the source.
+unchanged; export creates a new `_final[N].wav` beside the source. Saving a new
+recording opens this dialog immediately, including when recording from a score.
+Discarding a take or a failed save does not open mastering.
 
 ## Presets and controls
 
 | Preset | Threshold | Ratio | Attack | Release |
 | --- | --- | --- | --- | --- |
-| Gentle | −20 dB | 1.5:1 | 30 ms | 250 ms |
-| Balanced | −24 dB | 2:1 | 20 ms | 200 ms |
-| Even | −28 dB | 2.5:1 | 15 ms | 250 ms |
+| Gentle | −16 dB | 1.25:1 | 40 ms | 250 ms |
+| Balanced | −20 dB | 1.5:1 | 30 ms | 250 ms |
+| Even | −24 dB | 1.8:1 | 25 ms | 250 ms |
 
 **Advanced** exposes the existing EQ, compressor and limiter controls, plus the
 loudness target. Both tabs edit one shared settings value. Changing a preset

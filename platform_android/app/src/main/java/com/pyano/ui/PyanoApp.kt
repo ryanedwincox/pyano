@@ -34,6 +34,10 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
         takeBusy, viewModel.suggestedTakeName, { viewModel.resolveTake(true, it) }, { viewModel.resolveTake(false) },
         takeError, retryNameLocked = takeNameLocked
     )
+    val masteringRecording by viewModel.masteringRecording.collectAsState()
+    masteringRecording?.let { recording ->
+        MasteringScreen(recording, viewModel::closeMastering, viewModel::refreshRecordings)
+    }
     val viewerState by viewModel.scoreViewer.state.collectAsState()
     val screenKeyboard by viewModel.screenKeyboardEnabled.collectAsState()
     val keyboardOwner = remember(viewModel) { Any() }

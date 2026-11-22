@@ -547,9 +547,14 @@ class RecordingDecisionTest {
         val recorder = capture(this)
         val status = mock(RecordingCloudStatus::class.java)
         val scheduler = RecordingUploadScheduler(mock(Context::class.java), status) { false }
+        var opened: com.pyano.audio.RecordingInfo? = null
         val result = saveAndScheduleTake({ beforePublish -> recorder.saveTake("Queue failure", beforePublish) },
-            status, scheduler, "owner-a")
+            status, scheduler, "owner-a", onSaved = { opened = it })
         assertTrue(File(result.path).isFile)
+        val mastering = checkNotNull(opened)
+        assertEquals("Queue failure", mastering.name)
+        assertEquals(result.path, mastering.path)
+        assertEquals(File(result.path).length(), mastering.sizeBytes)
         assertTrue(result.warning!!.contains("reconfigure Cloud"))
         assertFalse(recorder.hasPendingTake)
     }
@@ -558,10 +563,31 @@ class RecordingDecisionTest {
         val recorder = capture(this)
         val status = mock(RecordingCloudStatus::class.java)
         val scheduler = RecordingUploadScheduler(mock(Context::class.java), status) { false }
+        var opened: com.pyano.audio.RecordingInfo? = null
         val result = saveAndScheduleTake({ beforePublish -> recorder.saveTake("Local take", beforePublish) },
-            status, scheduler, null)
+            status, scheduler, null, onSaved = { opened = it })
         assertTrue(File(result.path).isFile)
+        val mastering = checkNotNull(opened)
+        assertEquals("Local take", mastering.name)
+        assertEquals(result.path, mastering.path)
+        assertEquals(File(result.path).length(), mastering.sizeBytes)
         assertNull(result.warning)
+    }
+
+    @Test fun failedSaveDoesNotOpenMasteringAndFailedHandoffKeepsBothWarnings() = runBlocking<Unit> {
+        var opened = false
+        val status = mock(RecordingCloudStatus::class.java)
+        val scheduler = RecordingUploadScheduler(mock(Context::class.java), status) { false }
+        try {
+            saveAndScheduleTake({ throw java.io.IOException("Save failed") }, status, scheduler, null, onSaved = { opened = true })
+            fail("Expected save failure")
+        } catch (_: java.io.IOException) { }
+        assertFalse(opened)
+        val result = saveAndScheduleTake({ directory.root.resolve("removed-after-save.wav").path },
+            status, scheduler, "profile", onSaved = { opened = true })
+        assertFalse(opened)
+        assertTrue(result.warning!!.contains("cloud upload could not be queued"))
+        assertTrue(result.warning!!.contains("mastering could not open"))
     }
 
 }

@@ -4,7 +4,6 @@ package com.pyano.sync
 import android.content.Context
 import androidx.work.*
 import com.pyano.audio.RecordingInfo
-import com.pyano.audio.readWavHeader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -111,6 +110,7 @@ suspend fun saveAndScheduleTake(
     status: RecordingCloudStatus,
     scheduler: RecordingUploadScheduler,
     profileId: String?,
+    onSaved: ((RecordingInfo) -> Unit)? = null,
 ): SavedTakeResult {
     val intent = com.pyano.audio.TakePublicationIntent(
         prepare = { path, identity, midiIdentity -> status.pending(path, identity, profileId, midiIdentity) },
@@ -118,13 +118,12 @@ suspend fun saveAndScheduleTake(
     )
     val path = save(intent) ?: error("Could not save take")
     var warning: String? = null
+    var savedRecording: RecordingInfo? = null
     val message = if (profileId == null) "Saved locally; configure Cloud to upload automatically" else try {
         val recording = withContext(Dispatchers.IO) {
-            val wav = File(path)
-            val header = readWavHeader(wav)
-            val duration = header.dataSize * 1000 / (header.sampleRate.toLong() * header.channels * header.bitsPerSample / 8)
-            RecordingInfo(wav.nameWithoutExtension, path, duration, wav.lastModified(), wav.length())
+            com.pyano.audio.savedRecordingInfo(path)
         }
+        savedRecording = recording
         scheduler.enqueue(recording, profileId)
         "Saved and queued for private Cloud upload"
     } catch (e: CancellationException) { throw e }
@@ -134,6 +133,16 @@ suspend fun saveAndScheduleTake(
     catch (error: RecordingOwnerUnverified) { checkNotNull(error.message).also { warning = it } }
     catch (_: Exception) {
         "Saved locally; cloud upload could not be queued. Tap the cloud icon to retry.".also { warning = it }
+    }
+    if (onSaved != null) {
+        try {
+            val recording = savedRecording ?: withContext(Dispatchers.IO) { com.pyano.audio.savedRecordingInfo(path) }
+            onSaved(recording)
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) {
+            warning = listOfNotNull(warning,
+                "Recording saved, but mastering could not open. Open it from Saved Recordings to retry.").joinToString("\n")
+        }
     }
     return SavedTakeResult(path, message, warning)
 }

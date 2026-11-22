@@ -63,8 +63,25 @@ class MasteringAnalysisTest {
             val plan = analyzeMastering(dynamic, MasteringSettings(compression = preset.compression))
             assertEquals(-18f, plan.after.lufs!!, .5f)
             assertTrue(plan.after.peakDb <= -.99f)
-            assertTrue(plan.after.points.any { it.compressorDb > .05f })
+            if (preset != CompressionPreset.GENTLE) assertTrue(plan.after.points.any { it.compressorDb > .05f })
         }
+    }
+
+    @Test fun eachPresetReducesCompressionComparedWithItsPreviousSettings() {
+        val previous = listOf(MasteringCompression(-20f, 1.5f, 30f, 250f),
+            MasteringCompression(-24f, 2f, 20f, 200f), MasteringCompression(-28f, 2.5f, 15f, 250f))
+        fun reduction(settings: MasteringCompression): Float {
+            val compressor = Compressor(settings.threshold, settings.ratio, settings.attack, settings.release, sampleRate = 48000)
+            var total = 0f
+            repeat(48000) { frame ->
+                compressor.process(if (frame % 12000 < 2400) .6f else .03f)
+                total += compressor.currentGainReductionDb
+            }
+            return total / 48000
+        }
+        val current = CompressionPreset.entries.map { reduction(it.compression) }
+        current.forEachIndexed { index, value -> assertTrue(value < reduction(previous[index])) }
+        assertTrue(current[0] < current[1] && current[1] < current[2])
     }
 
     @Test fun linkedCompressorAndLimiterKeepStereoBalanceAndContainIsolatedPeaks() {

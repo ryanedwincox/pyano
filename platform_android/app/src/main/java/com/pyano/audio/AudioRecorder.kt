@@ -40,6 +40,14 @@ data class RecordingInfo(
     val sizeBytes: Long
 )
 
+fun savedRecordingInfo(path: String): RecordingInfo {
+    val file = File(path)
+    val header = readWavHeader(file)
+    require(header.sampleRate in 8000..192000 && header.channels == 2 && header.bitsPerSample == 16) { "Invalid saved audio format" }
+    val duration = header.dataSize * 1000 / (header.sampleRate.toLong() * header.channels * header.bitsPerSample / 8)
+    return RecordingInfo(file.nameWithoutExtension, file.absolutePath, duration, file.lastModified(), file.length())
+}
+
 fun readWavHeader(file: File): WavHeader {
     RandomAccessFile(file, "r").use { raf ->
         require(raf.length() >= 44) { "File too small to be a valid WAV: ${file.name}" }

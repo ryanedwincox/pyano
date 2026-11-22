@@ -3,13 +3,13 @@ package com.pyano.audio
 
 data class MasteringEq(val frequency: Float, val gain: Float = 0f)
 data class MasteringCompression(
-    val threshold: Float = -24f, val ratio: Float = 2f, val attack: Float = 20f,
-    val release: Float = 200f, val makeup: Float = 0f,
+    val threshold: Float = -20f, val ratio: Float = 1.5f, val attack: Float = 30f,
+    val release: Float = 250f, val makeup: Float = 0f,
 )
 enum class CompressionPreset(val title: String, val description: String, val compression: MasteringCompression) {
-    GENTLE("Gentle", "Preserve more of the piano's dynamics", MasteringCompression(-20f, 1.5f, 30f, 250f)),
+    GENTLE("Gentle", "Preserve more of the piano's dynamics", MasteringCompression(-16f, 1.25f, 40f, 250f)),
     BALANCED("Balanced", "A little more control for consistent listening", MasteringCompression()),
-    EVEN("Even", "More control over louder passages", MasteringCompression(-28f, 2.5f, 15f, 250f)),
+    EVEN("Even", "More control over louder passages", MasteringCompression(-24f, 1.8f, 25f, 250f)),
 }
 data class MasteringSettings(
     val eq: List<MasteringEq> = listOf(MasteringEq(250f), MasteringEq(1200f), MasteringEq(8000f)),

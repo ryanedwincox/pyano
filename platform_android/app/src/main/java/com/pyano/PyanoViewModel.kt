@@ -1526,7 +1526,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
                 if (save) {
                     val result = saveAndScheduleTake(
                         { beforePublish -> audioRecorder.saveTake(name, beforePublish) },
-                        cloudStatus, uploadScheduler, syncProfileId
+                        cloudStatus, uploadScheduler, syncProfileId, onSaved = ::openMastering
                     )
                     _pendingTake.value = false
                     _syncStatus.value = result.message

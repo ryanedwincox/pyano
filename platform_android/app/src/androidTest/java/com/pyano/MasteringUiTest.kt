@@ -47,7 +47,7 @@ class MasteringUiTest {
         compose.onNodeWithContentDescription("Ratio").assertDoesNotExist()
         compose.onNodeWithText("Gentle").performClick()
         compose.onNodeWithText("Advanced").performClick()
-        compose.onNodeWithContentDescription("Ratio").performScrollTo().assert(SemanticsMatcher.expectValue(SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(1.5f, 1f..20f)))
+        compose.onNodeWithContentDescription("Ratio").performScrollTo().assert(SemanticsMatcher.expectValue(SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo(1.25f, 1f..20f)))
         compose.onNodeWithContentDescription("Ratio").performSemanticsAction(SemanticsActions.SetProgress) { it(3f) }
         compose.runOnIdle { assertEquals(3f, settings.value.compression.ratio, .01f); assertNull(settings.value.preset) }
         compose.onNodeWithText("Simple").performScrollTo().performClick()
@@ -55,7 +55,7 @@ class MasteringUiTest {
         compose.onNodeWithText("Even").performClick()
         compose.onNodeWithText("Advanced").performClick()
         compose.onNodeWithContentDescription("Ratio").performScrollTo()
-        compose.runOnIdle { assertEquals(2.5f, settings.value.compression.ratio, .01f) }
+        compose.runOnIdle { assertEquals(1.8f, settings.value.compression.ratio, .01f) }
         compose.onNodeWithText("Simple").performScrollTo().performClick()
         compose.onNodeWithText("Balanced").performClick()
         compose.runOnIdle { assertEquals(MasteringCompression(), settings.value.compression) }

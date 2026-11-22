@@ -55,19 +55,9 @@ fun RecorderTab(viewModel: PyanoViewModel, onServerSettings: () -> Unit = {}) {
     val syncBusy by viewModel.syncBusy.collectAsState()
     val uploadError by viewModel.uploadError.collectAsState()
     val takeRecoveryAvailable by viewModel.takeRecoveryAvailable.collectAsState()
-    val masteringRecording by viewModel.masteringRecording.collectAsState()
 
     // Refresh recordings on first composition
     LaunchedEffect(Unit) { viewModel.refreshRecordings() }
-
-    // Mastering dialog
-    masteringRecording?.let { recording ->
-        MasteringScreen(
-            recording = recording,
-            onDismiss = { viewModel.closeMastering() },
-            onExportComplete = { viewModel.refreshRecordings() }
-        )
-    }
 
     Column(
         modifier = Modifier
