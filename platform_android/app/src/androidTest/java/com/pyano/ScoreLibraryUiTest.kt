@@ -7,6 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.pyano.scores.*
 import com.pyano.ui.ScoreLibraryContent
@@ -101,21 +103,23 @@ class ScoreLibraryUiTest {
         compose.onNodeWithContentDescription("Refresh scores").assertIsNotEnabled()
     }
 
-    @Test fun scopeFailureGuidanceAndCancellationRemainActionable() {
+    @Test fun refreshUsesInlineSpinnerAndKeepsFailuresActionableAfterCompletion() {
         var canceled = 0
-        compose.setContent {
-            MaterialTheme {
-                ScoreLibraryContent(
-                    ScoreLibraryState("namespace_a", "https://music.example.com", "owner_a", busy = true,
-                        message = "Provision a new Cloud device token with scores:read permission in Server settings."),
-                    {}, {}, { canceled++ }
-                )
-            }
-        }
-        compose.onNodeWithContentDescription("Refresh scores").assertIsNotEnabled()
-        compose.onNodeWithText("Provision a new Cloud device token with scores:read permission in Server settings.").assertIsDisplayed()
-        compose.onNodeWithText("Cancel operation").performClick()
+        val message = "Provision a new Cloud device token with scores:read permission in Server settings."
+        val state = mutableStateOf(ScoreLibraryState(namespace = "namespace_a", busy = true, message = message))
+        compose.setContent { MaterialTheme { ScoreLibraryContent(state.value, {}, {}, { canceled++ }) } }
+        compose.onNodeWithContentDescription("Refresh scores").assertDoesNotExist()
+        compose.onNodeWithText(message).assertDoesNotExist()
+        compose.onNodeWithText("Cancel operation").assertDoesNotExist()
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate),
+            useUnmergedTree = true).assert(hasAnyAncestor(hasContentDescription("Cancel operation")))
+        compose.onNodeWithContentDescription("Cancel operation").performClick()
         compose.runOnIdle { assertEquals(1, canceled) }
+        compose.onNodeWithContentDescription("Canceling operation").assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(busy = false) }
+        compose.onNodeWithText(message).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Refresh scores").assertIsEnabled()
+        compose.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate)).assertCountEquals(0)
     }
     @Test fun titlesOpenCloudOnlyScoresAndProfileChangesDismissRemoval() {
         var opened: Score? = null

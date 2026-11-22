@@ -14,6 +14,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.pyano.scores.Score
 import com.pyano.scores.ScoreLibraryController
 import com.pyano.scores.ScoreLibraryState
@@ -38,6 +40,7 @@ fun ScoreLibraryContent(
     onOpen: (Score) -> Unit = {},
     onServerSettings: () -> Unit = {},
 ) {
+    var cancelRequested by remember(state.busy) { mutableStateOf(false) }
     var pendingRemoval by remember(state.namespace) { mutableStateOf<Score?>(null) }
     val removal = pendingRemoval?.takeIf { pending -> state.rows.any { it.score == pending && it.localCopy } }
     if (removal != null) AlertDialog(
@@ -52,16 +55,20 @@ fun ScoreLibraryContent(
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Private scores", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            IconButton(onClick = onRefresh, enabled = state.namespace != null && !state.busy) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh scores")
+            IconButton(onClick = {
+                if (state.busy) { cancelRequested = true; onCancel() } else onRefresh()
+            }, enabled = state.namespace != null && !cancelRequested,
+                modifier = Modifier.semantics {
+                    contentDescription = if (cancelRequested) "Canceling operation" else if (state.busy) "Cancel operation" else "Refresh scores"
+                }) {
+                if (state.busy) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Default.Refresh, contentDescription = null)
             }
             IconButton(onClick = { onCancel(); onServerSettings() }) {
                 Icon(Icons.Default.Settings, contentDescription = "Server settings")
             }
         }
-        if (state.busy) TextButton(onClick = onCancel) { Text("Cancel operation") }
-        if (state.message.isNotBlank()) Text(state.message, style = MaterialTheme.typography.bodyMedium)
-        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (!state.busy && state.message.isNotBlank()) Text(state.message, style = MaterialTheme.typography.bodyMedium)
         if (state.namespace != null && state.rows.isEmpty() && !state.busy) Text("No scores yet. Refresh while connected to Cloud.")
         LazyColumn {
             items(state.rows, key = { it.score.identity }) { row ->
