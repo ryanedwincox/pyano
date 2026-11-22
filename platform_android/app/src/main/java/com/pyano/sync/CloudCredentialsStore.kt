@@ -1,4 +1,4 @@
-// Concern: encrypts cloud device credentials at rest | Non-concern: token authentication | IO: (device token) -> encrypted preferences
+// Concern: verifies owner and encrypts device credentials | Non-concern: token issuance | IO: (authenticated device token) -> encrypted profile
 package com.pyano.sync
 
 import android.content.Context
@@ -15,6 +15,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 internal interface CredentialStorage {
     fun read(key: String): String?
+    fun keys(): Set<String> = emptySet()
     fun commit(values: Map<String, String>): Boolean
 }
 
@@ -23,22 +24,40 @@ internal interface CredentialCipher {
     fun decrypt(iv: String, encrypted: String): String
 }
 
-class CloudCredentialsStore internal constructor(private val storage: CredentialStorage, private val cipher: CredentialCipher) {
+class CloudCredentialsStore internal constructor(private val storage: CredentialStorage, private val cipher: CredentialCipher,
+    private val verifyOwner: (CloudCredentials) -> Unit) {
     constructor(context: Context) : this(
-        PreferenceCredentialStorage(context.getSharedPreferences("pyano_cloud_credentials", Context.MODE_PRIVATE)), KeystoreCredentialCipher()
+        PreferenceCredentialStorage(context.getSharedPreferences("pyano_cloud_credentials", Context.MODE_PRIVATE)), KeystoreCredentialCipher(),
+        { credentials -> CloudSyncClient(context.cacheDir).verifyDeviceOwner(credentials.endpoint, credentials.ownerId, credentials.token) }
+    )
+    internal constructor(context: Context, verifyOwner: (CloudCredentials) -> Unit) : this(
+        PreferenceCredentialStorage(context.getSharedPreferences("pyano_cloud_credentials", Context.MODE_PRIVATE)), KeystoreCredentialCipher(), verifyOwner
     )
 
-    fun save(endpoint: String, ownerId: String, token: String): String = synchronized(LOCK) {
+    fun save(endpoint: String, ownerId: String, token: String): String {
         validateCloudSettings(endpoint, ownerId, token)
-        val profileId = UUID.randomUUID().toString()
-        val (iv, encrypted) = cipher.encrypt(token.trim())
-        check(storage.commit(mapOf(
-            "$profileId.endpoint" to endpoint.trim().trimEnd('/'), "$profileId.ownerId" to ownerId.trim(),
-            "$profileId.tokenIv" to iv, "$profileId.tokenCiphertext" to encrypted,
-            "currentProfileId" to profileId, "selectedMode" to "cloud",
-            "selectedEndpoint" to endpoint.trim().trimEnd('/'), "selectedOwnerId" to ownerId.trim()
-        ))) { "Could not save cloud settings" }
-        profileId
+        val origin = canonicalCloudOrigin(endpoint)
+        verifyOwner(CloudCredentials(origin, ownerId.trim(), token.trim()))
+        return synchronized(LOCK) {
+            val selectedId = currentProfileId()
+            val selected = selectedId?.let(::load)
+            if (selected != null && canonicalCloudOrigin(selected.endpoint) == origin &&
+                selected.ownerId == ownerId.trim() && selected.token == token.trim()) {
+                check(storage.commit(mapOf("selectedMode" to "cloud", "selectedEndpoint" to origin,
+                    "selectedOwnerId" to selected.ownerId, latestOwnerKey(selected.endpoint, selected.ownerId) to checkNotNull(selectedId)))) { "Could not save cloud settings" }
+                return@synchronized selectedId
+            }
+            val profileId = UUID.randomUUID().toString()
+            val (iv, encrypted) = cipher.encrypt(token.trim())
+            check(storage.commit(mapOf(
+                "$profileId.endpoint" to origin, "$profileId.ownerId" to ownerId.trim(),
+                "$profileId.tokenIv" to iv, "$profileId.tokenCiphertext" to encrypted,
+                "currentProfileId" to profileId, "selectedMode" to "cloud",
+                "selectedEndpoint" to origin, "selectedOwnerId" to ownerId.trim(),
+                latestOwnerKey(origin, ownerId.trim()) to profileId
+            ))) { "Could not save cloud settings" }
+            profileId
+        }
     }
 
     fun selectLocal(endpoint: String, ownerId: String) = synchronized(LOCK) {
@@ -64,10 +83,41 @@ class CloudCredentialsStore internal constructor(private val storage: Credential
         }.getOrNull()
     }
 
+    fun recordingCredentials(boundProfileId: String): CloudCredentials? = synchronized(LOCK) {
+        val endpoint = storage.read("$boundProfileId.endpoint") ?: return@synchronized null
+        val owner = storage.read("$boundProfileId.ownerId") ?: return@synchronized null
+        val latestId = storage.read(latestOwnerKey(endpoint, owner))
+            ?: storage.read(latestOwnerKey(endpoint, owner, canonical = false))
+        if (latestId != null) {
+            return@synchronized load(latestId)?.takeIf { runCatching { canonicalCloudOrigin(it.endpoint) == canonicalCloudOrigin(endpoint) && it.ownerId == owner }.getOrDefault(false) }
+        }
+        val bound = load(boundProfileId) ?: return@synchronized null
+        val current = currentProfileId()?.let(::load)
+        if (current != null && sameCloudOwner(bound, current)) current else bound
+    }
+
+    private fun latestOwnerKey(endpoint: String, owner: String, canonical: Boolean = true): String {
+        val origin = if (canonical) canonicalCloudOrigin(endpoint) else endpoint.trim().trimEnd('/')
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest("$origin\u0000$owner".toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        return "latest-owner:$hash"
+    }
+
+    internal fun recordingOwnerScope(profileId: String): String? = synchronized(LOCK) {
+        val endpoint = storage.read("$profileId.endpoint") ?: return@synchronized null
+        val owner = storage.read("$profileId.ownerId") ?: return@synchronized null
+        runCatching { "${canonicalCloudOrigin(endpoint)}\u0000$owner" }.getOrNull()
+    }
+
+    internal fun knownProfileIds(): List<String> = synchronized(LOCK) {
+        storage.keys().filter { it.endsWith(".ownerId") }.map { it.removeSuffix(".ownerId") }
+    }
+
     companion object { private val LOCK = Any() }
 }
 
 internal class PreferenceCredentialStorage(private val prefs: SharedPreferences) : CredentialStorage {
+    override fun keys() = prefs.all.keys
     override fun read(key: String): String? = prefs.getString(key, null)
     override fun commit(values: Map<String, String>): Boolean {
         val old = prefs.all.mapValues { it.value as String }
@@ -119,3 +169,16 @@ class CloudCredentials(val endpoint: String, val ownerId: String, val token: Str
 }
 
 data class CloudSelection(val cloud: Boolean, val endpoint: String, val ownerId: String)
+
+internal fun canonicalCloudOrigin(endpoint: String): String {
+    val uri = runCatching { java.net.URI(endpoint.trim().trimEnd('/')) }.getOrNull()
+    require(uri?.scheme.equals("https", ignoreCase = true) && !uri?.host.isNullOrBlank()) { "Cloud service must use HTTPS" }
+    require(uri!!.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null && uri.path.orEmpty() in setOf("", "/")) {
+        "Use a cloud address without credentials, query, or path"
+    }
+    return java.net.URI("https", null, uri.host.lowercase(java.util.Locale.ROOT), if (uri.port == 443) -1 else uri.port, null, null, null).toASCIIString()
+}
+
+internal fun sameCloudOwner(first: CloudCredentials, second: CloudCredentials) = runCatching {
+    canonicalCloudOrigin(first.endpoint) == canonicalCloudOrigin(second.endpoint) && first.ownerId == second.ownerId
+}.getOrDefault(false)

@@ -7,21 +7,19 @@ enter shared storage or Android Auto Backup. Removing a local copy does not send
 a Cloud deletion request. Cached older versions and removed-remote scores remain
 readable locally until explicitly removed.
 
-## Provisional device wire
+## Cloud device wire
 
-The owner directed building while Cloud #13 was being implemented concurrently.
-The wire adapter currently expects these additive v1 routes:
+The adapter follows the deployed Cloud score contract:
 
-- GET `/api/v1/scores?limit=100`, with optional percent-encoded `cursor`.
-- JSON `{scores:[{scoreId,title,version,sizeBytes,sha256}],nextCursor:null}`.
-- `version` is a portable string or positive integer; SHA-256 is lowercase hex.
-- GET `/api/v1/scores/{scoreId}/download` returns `application/pdf`.
+- GET `/api/v1/scores`, with optional percent-encoded `cursor`; page size is server-controlled.
+- JSON `{scores:[{id,title,metadataVersion,sizeBytes,sha256,contentType,downloadUrl}],nextCursor:null}`.
+- `metadataVersion` is a positive integer; SHA-256 is lowercase hex and contentType is `application/pdf`.
+- GET `/api/v1/scores/{id}/pdf` returns `application/pdf`; the client constructs the fixed path.
 - All requests use the selected bearer token with `scores:read`; no owner is sent
   in the URL and redirects are rejected. PDF downloads are bounded to 25 MiB.
 
-The adapter is centralized in CloudScoreClient/ScoreModels. These paths and field
-names must be compared with the published Cloud contract before integration.
-Fixture verification does not establish interoperability with a live deployment.
+The wire adapter maps `id`/`metadataVersion` into the existing cache identity;
+offline manifests retain their original `scoreId`/`version` format.
 
 ## Automated coverage
 
@@ -32,8 +30,9 @@ A failed manifest publication after a same-version checksum change preserves the
 previously referenced bytes. Injected transport tests cover malformed/paginated
 responses, scope failures with redacted bodies, size limits and blocked-read
 cancellation. Controller tests cover failed/malformed refresh and late operations
-following profile switches. Compose tests exercise local actions, profile clearing,
-provisioning guidance and cancellation controls using synthetic metadata.
+following profile switches, download-before-open, and suppressed opens after failures
+or cancellation. Compose tests exercise compact rows, local-removal confirmation,
+profile clearing, provisioning guidance and icon controls using synthetic metadata.
 
 ## Manual tablet checklist
 
@@ -41,18 +40,19 @@ Use disposable private scores and test credentials. Do not publish credentials,
 personal score files, screenshots of private titles, or camera frames as artifacts.
 
 - Provision a token with scores:read, choose Scores, and explicitly refresh.
-- Download one PDF, switch to airplane mode, fully restart Pyano and check its
-  title/version remains available offline. Opening/rendering belongs to issue #3.
-- Change score content remotely and refresh; the old local version must remain
-  marked older. Delete remotely and refresh; the offline copy must remain present.
+- Tap a score title to download and open its PDF; tap again offline to reopen it.
+- Switch to airplane mode, fully restart Pyano and check its title still opens offline.
+- Change score content remotely and refresh; the old local copy must remain readable.
+  Delete remotely and refresh; the offline copy must remain present.
 - Interrupt/cancel a download and restart; no incomplete PDF may appear ready.
-- Switch profile, owner and Local mode; no previous profile's rows may appear.
+- Switch Cloud profile and owner; no previous profile's rows may appear.
 - Revoke the token/remove its scope and refresh; provisioning guidance must appear
   while existing cached rows remain browsable. Reprovision and retry.
-  Reprovisioning creates a new profile even for the same owner/origin: the new
-  library starts empty and requires downloading again. Old private files remain
+  An unchanged token keeps its existing profile and cached scores. A changed token
+  creates a new profile and requires downloading again. Old private files remain
   isolated; the current UI does not select a previous credential profile.
-- Remove one local version and confirm the Cloud file and other versions remain.
+- Tap trash and cancel; the local copy must remain. Confirm removal and check the
+  Cloud file and other versions remain; Cloud rows can be downloaded again.
 - Repeat refresh/download/cancel/remove while recording, loops, metronome and MIDI
   run. Verify audible continuity and foreground-service ownership manually.
 

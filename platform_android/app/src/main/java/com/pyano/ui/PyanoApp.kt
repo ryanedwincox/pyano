@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -27,21 +28,57 @@ private enum class AppTab(val title: String) {
 fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
     val pendingTake by viewModel.pendingTake.collectAsState()
     val takeBusy by viewModel.takeBusy.collectAsState()
-    val takeStatus by viewModel.syncStatus.collectAsState()
-    if (pendingTake) SaveTakeDialog(
-        takeBusy, { viewModel.resolveTake(true) }, { viewModel.resolveTake(false) },
-        takeStatus.takeIf { it.startsWith("Could not finish") }
+    val takeError by viewModel.takeError.collectAsState()
+    val takeNameLocked by viewModel.takeNameLocked.collectAsState()
+    if (pendingTake) SaveTakeFlow(
+        takeBusy, viewModel.suggestedTakeName, { viewModel.resolveTake(true, it) }, { viewModel.resolveTake(false) },
+        takeError, retryNameLocked = takeNameLocked
     )
     val viewerState by viewModel.scoreViewer.state.collectAsState()
-    if (viewerState.source != null) {
-        ScoreViewerScreen(viewModel.scoreViewer)
-        return
+    val screenKeyboard by viewModel.screenKeyboardEnabled.collectAsState()
+    val keyboardOwner = remember(viewModel) { Any() }
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (viewerState.source != null) {
+                val recording by viewModel.isAudioRecording.collectAsState()
+                val syncBusy by viewModel.syncBusy.collectAsState()
+                ScoreViewerScreen(viewModel.scoreViewer, recording, !pendingTake && !takeBusy && !syncBusy) {
+                    if (recording) viewModel.stopAudioRecording()
+                    else viewModel.startAudioRecording(viewerState.source?.score?.title)
+                }
+            }
+            else WorkstationTabs(viewModel, onOpenApps)
+        }
+        if (screenKeyboard) OnScreenKeyboard(
+            { note, down -> viewModel.screenNote(keyboardOwner, note, down) },
+            { viewModel.releaseScreenNotes(keyboardOwner) }
+        )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorkstationTabs(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)?) {
     // Clamped: a saved index can point past the end (Devices used to be a tab).
     val selectedTab = viewModel.selectedTab.collectAsState().value
         .takeIf { it in AppTab.entries.indices } ?: AppTab.Synth.ordinal
-    val outputProblem by viewModel.outputProblem.collectAsState()
+    val outputProblem by viewModel.outputWarning.collectAsState()
     var showDevices by remember { mutableStateOf(false) }
+    var showServerSettings by rememberSaveable(selectedTab) { mutableStateOf(false) }
+    if (showServerSettings) {
+        val syncBusy by viewModel.syncBusy.collectAsState()
+        val serverSettingsStatus by viewModel.serverSettingsStatus.collectAsState()
+        ServerSettingsDialog(
+            endpoint = viewModel.recordingSyncEndpoint,
+            cloud = viewModel.cloudSyncEnabled,
+            ownerId = viewModel.cloudSyncOwnerId,
+            status = serverSettingsStatus,
+            busy = syncBusy,
+            onConfigure = viewModel::configureRecordingSync,
+            onDismiss = { showServerSettings = false },
+            loadToken = viewModel::loadRecordingSyncToken,
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -81,19 +118,8 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
                         )
                     }
                 }
-                // The chosen output dropped out: say which layer lost it, wherever the user is.
                 outputProblem?.let { problem ->
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        onClick = { showDevices = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            problem,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        )
-                    }
+                    OutputWarningBanner(problem, { showDevices = true }, viewModel::dismissOutputWarning)
                 }
             }
         }
@@ -103,8 +129,8 @@ fun PyanoApp(viewModel: PyanoViewModel, onOpenApps: (() -> Unit)? = null) {
                 AppTab.Synth.ordinal -> SynthTab(viewModel)
                 AppTab.Metronome.ordinal -> MetronomeTab(viewModel)
                 AppTab.Loops.ordinal -> LoopStationTab(viewModel)
-                AppTab.Recorder.ordinal -> RecorderTab(viewModel)
-                AppTab.Scores.ordinal -> ScoreLibraryTab(viewModel.scoreLibrary, viewModel::openScore)
+                AppTab.Recorder.ordinal -> RecorderTab(viewModel) { showServerSettings = true }
+                AppTab.Scores.ordinal -> ScoreLibraryTab(viewModel.scoreLibrary, viewModel::openScore) { showServerSettings = true }
             }
         }
     }

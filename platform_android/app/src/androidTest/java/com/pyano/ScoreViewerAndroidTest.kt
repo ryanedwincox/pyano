@@ -3,6 +3,7 @@ package com.pyano
 
 import android.graphics.pdf.PdfDocument
 import android.graphics.Paint
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.view.WindowManager
@@ -12,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -20,6 +22,7 @@ import com.pyano.sync.CloudCredentials
 import com.pyano.viewer.*
 import com.pyano.ui.ScoreLibraryContent
 import com.pyano.ui.ScoreViewerScreen
+import com.pyano.ui.ScoreViewerContent
 import kotlinx.coroutines.*
 import org.junit.Assert.*
 import org.junit.Before
@@ -119,17 +122,26 @@ class ScoreViewerAndroidTest {
                 MaterialTheme {
                     if (state.source != null) ScoreViewerScreen(viewer)
                     else ScoreLibraryContent(ScoreLibraryState(profile.namespace, profile.endpoint, profile.ownerId,
-                        listOf(ScoreRow(score, true, "Available offline"))), {}, {}, {}, {}, { viewer.open(source) })
+                        listOf(ScoreRow(score, true, "Available offline"))), {}, {}, {}, { viewer.open(source) })
                 }
             }
             compose.setContent(content)
-            compose.onNodeWithText("Open PDF").performClick()
+            compose.onNodeWithText("Synthetic score").performClick()
             compose.waitUntil(5000) { viewer.state.value.frame != null }
             compose.onNodeWithText("Page 1 of 3").assertIsDisplayed()
+            compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeRight() }
+            compose.runOnIdle { assertEquals(0, viewer.state.value.reading.page) }
+            compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeLeft() }
+            compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.reading.page == 1 }
+            compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeRight() }
+            compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.reading.page == 0 }
             compose.onNodeWithText("Next").performClick()
             compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.reading.page == 1 }
-            compose.onNodeWithText("Zoom in").performClick()
+            compose.onNodeWithContentDescription("Zoom in").performClick()
             compose.waitUntil(5000) { viewer.state.value.reading.zoom > 1f }
+            compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeLeft() }
+            compose.runOnIdle { assertEquals(1, viewer.state.value.reading.page) }
+            compose.onNodeWithContentDescription("Zoom out").assertIsDisplayed()
             compose.onNodeWithTag("pdf-viewport").performTouchInput {
                 pinch(center + Offset(-40f, 0f), center + Offset(40f, 0f), center + Offset(-100f, 0f), center + Offset(100f, 0f))
             }
@@ -151,15 +163,41 @@ class ScoreViewerAndroidTest {
             compose.onNodeWithText("PDF memory released. Tap Retry to reopen the saved page.").assertIsDisplayed()
             compose.onNodeWithText("Retry").performClick()
             compose.waitUntil(5000) { viewer.state.value.frame != null }
-            compose.onNodeWithText("Back to scores").performClick()
-            compose.onNodeWithText("Open PDF").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Back to scores").performClick()
+            compose.onNodeWithText("Synthetic score").assertIsDisplayed()
             compose.waitUntil(5000) { positions.load(profile.namespace, score).reading.page == 1 }
-            compose.onNodeWithText("Open PDF").performClick()
+            compose.onNodeWithText("Synthetic score").performClick()
             compose.waitUntil(5000) { viewer.state.value.frame != null }
             compose.onNodeWithText("Page 2 of 3").assertIsDisplayed()
             compose.runOnIdle { viewer.clearProfile() }
-            compose.onNodeWithText("Back to scores").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Back to scores").assertDoesNotExist()
         } finally { viewer.shutdown(); scope.cancel(); root.deleteRecursively() }
+    }
+    @Test fun pageSlidesInBothDirectionsAndClearsImmediatelyWhenReleased() {
+        val first = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))
+        val second = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))
+        val state = mutableStateOf(ScoreViewerState(pageCount = 3, frame = first, session = 1))
+        compose.setContent { MaterialTheme { ScoreViewerContent(state.value, {}, {}, { _, _, _ -> }, {}) } }
+        compose.onNodeWithContentDescription("Back to scores").assertIsDisplayed()
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { state.value = state.value.copy(reading = ReadingState(page = 1), frame = second) }
+        compose.mainClock.advanceTimeBy(100)
+        val oldForward = compose.onNodeWithContentDescription("PDF page 1").getUnclippedBoundsInRoot().left.value
+        val newForward = compose.onNodeWithContentDescription("PDF page 2").getUnclippedBoundsInRoot().left.value
+        assertTrue(oldForward < newForward)
+        compose.onNodeWithText("Next").assertIsNotEnabled()
+        compose.mainClock.advanceTimeBy(400)
+        compose.onNodeWithContentDescription("PDF page 1").assertDoesNotExist()
+        compose.runOnIdle { state.value = state.value.copy(reading = ReadingState(), frame = first) }
+        compose.mainClock.advanceTimeBy(100)
+        val oldBackward = compose.onNodeWithContentDescription("PDF page 2").getUnclippedBoundsInRoot().left.value
+        val newBackward = compose.onNodeWithContentDescription("PDF page 1").getUnclippedBoundsInRoot().left.value
+        assertTrue(newBackward < oldBackward)
+        compose.runOnIdle { state.value = state.value.copy(frame = null, loading = false) }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithContentDescription("PDF page 1").assertDoesNotExist()
+        compose.onNodeWithContentDescription("PDF page 2").assertDoesNotExist()
+        compose.mainClock.autoAdvance = true
     }
     @Test fun missingAndCorruptDocumentsShowRetryWithoutCrash() = runBlocking {
         val root = root()
@@ -180,7 +218,7 @@ class ScoreViewerAndroidTest {
             compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.message != null }
             compose.onNodeWithText("Retry").performClick()
             compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.message != null }
-            compose.onNodeWithText("Back to scores").performClick()
+            compose.onNodeWithContentDescription("Back to scores").performClick()
             assertNull(viewer.state.value.source)
         } finally { viewer.shutdown(); scope.cancel(); root.deleteRecursively() }
     }

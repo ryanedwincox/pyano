@@ -15,7 +15,7 @@ Use a disposable Cloud device token; the QR/JSON is a bearer credential. Never
 include it in screenshots, logs, crash reports, test output, or issue comments.
 
 - With audio, a loop, metronome, MIDI input and recording active, open recording
-  sync settings and choose Cloud. Verify manual entry and Local prototype remain.
+  server settings. Verify Cloud manual entry and QR import; Local prototype is not offered.
 - Scan a provisioning QR offline. Verify only origin and owner appear at confirmation;
   cancel and confirm that previous settings and queued uploads remain unchanged.
 - Deny CAMERA permission, deny permanently, and test a camera-less tablet. Verify

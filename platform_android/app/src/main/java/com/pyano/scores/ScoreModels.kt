@@ -34,7 +34,7 @@ data class ScoreLibraryState(
     val ownerId: String = "",
     val rows: List<ScoreRow> = emptyList(),
     val busy: Boolean = false,
-    val message: String = "Choose a Cloud profile in Recorder settings to browse private scores.",
+    val message: String = "Choose a Cloud profile in Server settings to browse private scores.",
 )
 
 class ScoreFailure(message: String) : Exception(message)
@@ -42,7 +42,19 @@ internal fun scoreFailure(): Nothing = throw ScoreFailure("Invalid score metadat
 
 internal fun scoreString(element: JsonElement?, max: Int): String {
     if (element == null || !element.isJsonPrimitive || !element.asJsonPrimitive.isString) scoreFailure()
-    return element.asString.takeIf { it.isNotEmpty() && it.length <= max && it.none { c -> c < ' ' || c == '\u007f' } } ?: scoreFailure()
+    return element.asString.takeIf { it.isNotEmpty() && it.codePointCount(0, it.length) <= max && it.none { c -> c < ' ' || c == '\u007f' } } ?: scoreFailure()
+}
+
+internal fun decodeCloudScore(value: JsonElement): Score {
+    if (!value.isJsonObject) scoreFailure()
+    val wire = value.asJsonObject
+    if (scoreString(wire.get("contentType"), 128) != "application/pdf") scoreFailure()
+    val version = wire.get("metadataVersion") ?: scoreFailure()
+    if (!version.isJsonPrimitive || !version.asJsonPrimitive.isNumber) scoreFailure()
+    return decodeScore(JsonObject().apply {
+        add("scoreId", wire.get("id")); add("title", wire.get("title")); add("version", version)
+        add("sizeBytes", wire.get("sizeBytes")); add("sha256", wire.get("sha256"))
+    })
 }
 
 internal fun decodeScore(value: JsonElement): Score {

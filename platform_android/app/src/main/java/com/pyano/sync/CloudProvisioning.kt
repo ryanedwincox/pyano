@@ -81,11 +81,7 @@ class ProvisioningSession {
 }
 
 fun validateCloudSettings(endpoint: String, ownerId: String, token: String) {
-    val uri = runCatching { URI(endpoint.trim().trimEnd('/')) }.getOrNull()
-    require(uri?.scheme == "https" && !uri.host.isNullOrBlank()) { "Cloud service must use HTTPS" }
-    require(uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null && uri.path.orEmpty() in setOf("", "/")) {
-        "Use a cloud address without credentials, query, or path"
-    }
+    canonicalCloudOrigin(endpoint)
     require(ownerId.trim().matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) { "Enter the owner ID from device provisioning" }
     require(token.isNotBlank() && token.none { it == '\r' || it == '\n' }) { "Enter the device token" }
 }

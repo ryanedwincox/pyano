@@ -34,6 +34,7 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
         private set
 
     private val soundingNotes = IntArray(16 * 128) { UNKNOWN_NOTE }
+    private val sustainedChannels = BooleanArray(16)
 
     // Running status — last channel-voice status byte seen (for MIDI running status support)
     private var runningStatus: Int = 0
@@ -96,6 +97,7 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                     val ctrl = data[pos].toInt() and 0x7F
                     val value = data[pos + 1].toInt() and 0x7F
                     if (ctrl != 7 && ctrl != 11) {
+                        if (ctrl == 64) sustainedChannels[channel] = value >= 64
                         engine.cc(channel, ctrl, value)
                         recordingListener?.onMidiEvent(channel, MidiEventType.CONTROL_CHANGE, ctrl, value)
                     }
@@ -117,6 +119,23 @@ class MidiEventHandler(private val engine: FluidSynthEngine) : MidiReceiver() {
                 else -> { pos++ }
             }
         }
+    }
+
+    @Synchronized
+    fun releaseAllNotes() {
+        for (channel in 0 until 16) {
+            for (note in 0 until 128) {
+                if (soundingNotes[channel * 128 + note] >= 0) releaseNote(channel, note)
+            }
+            if (sustainedChannels[channel]) {
+                engine.cc(channel, 64, 0)
+                recordingListener?.onMidiEvent(channel, MidiEventType.CONTROL_CHANGE, 64, 0)
+                sustainedChannels[channel] = false
+            }
+        }
+        soundingNotes.fill(NO_SOUNDING_NOTE)
+        activeNoteCount = 0
+        runningStatus = 0
     }
 
     @Synchronized

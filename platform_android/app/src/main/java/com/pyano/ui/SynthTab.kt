@@ -17,6 +17,7 @@ fun SynthTab(viewModel: PyanoViewModel) {
     val soundFontName by viewModel.soundFontName.collectAsState()
     val midiDevices by viewModel.midiDevices.collectAsState()
     val selectedMidiDevice by viewModel.selectedMidiDevice.collectAsState()
+    val screenKeyboard by viewModel.screenKeyboardEnabled.collectAsState()
     val presets by viewModel.presets.collectAsState()
     val selectedPresetIndex by viewModel.selectedPresetIndex.collectAsState()
     val gain by viewModel.gain.collectAsState()
@@ -128,10 +129,13 @@ fun SynthTab(viewModel: PyanoViewModel) {
                             modifier = Modifier.width(88.dp)
                         )
                         AdaptiveSelector(
-                            items = midiDevices,
-                            selected = selectedMidiDevice,
-                            onSelect = { viewModel.connectMidiDevice(it) },
-                            label = { viewModel.midiDeviceName(it) },
+                            items = listOf("screen") + midiDevices.map { it.id.toString() },
+                            selected = if (screenKeyboard) "screen" else selectedMidiDevice?.id?.toString(),
+                            onSelect = { input ->
+                                if (input == "screen") viewModel.selectScreenKeyboard()
+                                else midiDevices.find { it.id.toString() == input }?.let(viewModel::connectMidiDevice)
+                            },
+                            label = { input -> midiDevices.find { it.id.toString() == input }?.let(viewModel::midiDeviceName) ?: "On-screen keyboard" },
                             modifier = Modifier.weight(1f),
                             emptyText = "No MIDI device",
                         )

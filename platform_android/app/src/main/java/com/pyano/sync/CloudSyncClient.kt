@@ -14,12 +14,17 @@ import java.security.MessageDigest
 
 class CloudSyncException(message: String, val retryable: Boolean) : Exception(message)
 
-internal fun validateUploadPartSize(value: Int): Int {
-    require(value in 5 * 1024 * 1024..16 * 1024 * 1024) { "Cloud service returned an unsafe upload part size" }
-    return value
+internal fun validateUploadPartSize(value: Any?): Int {
+    val number = (value as? Number)?.takeUnless { it is Double || it is Float }?.toString()?.toBigDecimalOrNull()
+    require(number != null && number >= (5 * 1024 * 1024).toBigDecimal() && number <= (16 * 1024 * 1024).toBigDecimal() &&
+        number.stripTrailingZeros().scale() <= 0) { "Cloud service returned an unsafe upload part size" }
+    return number.toInt()
 }
 
-class CloudSyncClient(private val cache: File) {
+class CloudSyncClient(
+    private val cache: File,
+    private val openTitleConnection: (URI) -> HttpURLConnection = { it.toURL().openConnection() as HttpURLConnection },
+) {
     suspend fun upload(
         wav: File,
         title: String,
@@ -29,47 +34,136 @@ class CloudSyncClient(private val cache: File) {
         ownerId: String,
         token: String,
     ) {
-        val base = validateSettings(endpoint, ownerId, token)
-        val midi = RecordingBundleFiles.midi(wav).takeIf { it.isFile }
-        val recordingId = stableId(wav, midi)
-        if (isComplete(base, token, recordingId)) return
-        val work = File(cache, "cloud-${java.util.UUID.randomUUID()}")
-        check(work.mkdirs()) { "Could not prepare cloud upload" }
         try {
-            val audio = File(wav.parentFile, "upload-audio.m4a")
-            persistUploadAudio(audio) { CompressedAudio.encode(wav, it) }
-            currentCoroutineContext().ensureActive()
-            val assets = listOfNotNull(
-                Asset("audio", "audio/mp4", audio, sha256(audio)),
-                midi?.let { Asset("midi", "audio/midi", it, sha256(it)) },
-            )
-            val body = JSONObject()
-                .put("contractVersion", 1)
-                .put("ownerId", ownerId.trim())
-                .put("recordingId", recordingId)
-                .put("title", title)
-                .put("durationMs", durationMs.coerceAtLeast(1))
-                .put("capturedAt", capturedAt)
-                .put("audioMidiOffsetMs", 0)
-                .put("assets", JSONArray(assets.map { it.json() }))
-            val session = postJson(base.resolve("/api/v1/recordings"), token, body, recordingId)
-            if (session.optString("state") in setOf("complete", "completed")) return
-            val uploadId = session.getString("uploadId")
-            val partSize = validateUploadPartSize(session.getInt("partSizeBytes"))
-            val remoteAssets = session.getJSONArray("assets")
-            assets.forEach { asset ->
-                val remote = (0 until remoteAssets.length()).map { remoteAssets.getJSONObject(it) }
-                    .first { it.getString("role") == asset.role }
-                if (remote.optBoolean("uploaded")) return@forEach
-                val uploaded = remote.getJSONArray("uploadedParts").let { array ->
-                    (0 until array.length()).map { array.getInt(it) }.toSet()
+            val base = validateSettings(endpoint, ownerId, token)
+            verifyDeviceOwner(endpoint, ownerId, token)
+            val midi = RecordingBundleFiles.midi(wav).takeIf { it.isFile }
+            val recordingId = stableId(wav, midi)
+            if (isComplete(base, token, recordingId)) return
+            val work = File(cache, "cloud-${java.util.UUID.randomUUID()}")
+            check(work.mkdirs()) { "Could not prepare cloud upload" }
+            try {
+                val audio = File(wav.parentFile, "upload-audio.m4a")
+                persistUploadAudio(audio) { CompressedAudio.encode(wav, it) }
+                currentCoroutineContext().ensureActive()
+                val assets = listOfNotNull(
+                    Asset("audio", "audio/mp4", audio, sha256(audio)),
+                    midi?.let { Asset("midi", "audio/midi", it, sha256(it)) },
+                )
+                val body = JSONObject()
+                    .put("contractVersion", 1)
+                    .put("ownerId", ownerId.trim())
+                    .put("recordingId", recordingId)
+                    .put("title", title)
+                    .put("durationMs", durationMs.coerceAtLeast(1))
+                    .put("capturedAt", capturedAt)
+                    .put("audioMidiOffsetMs", 0)
+                    .put("assets", JSONArray(assets.map { it.json() }))
+                val session = postJson(base.resolve("/api/v1/recordings"), token, body, recordingId)
+                if (session.optString("state") in setOf("complete", "completed")) return
+                val uploadId = session.getString("uploadId")
+                val partSize = validateUploadPartSize(session.get("partSizeBytes"))
+                val remoteAssets = session.getJSONArray("assets")
+                assets.forEach { asset ->
+                    val remote = (0 until remoteAssets.length()).map { remoteAssets.getJSONObject(it) }
+                        .first { it.getString("role") == asset.role }
+                    if (remote.optBoolean("uploaded")) return@forEach
+                    val uploaded = remote.getJSONArray("uploadedParts").let { array ->
+                        (0 until array.length()).map { array.getInt(it) }.toSet()
+                    }
+                    uploadParts(base, token, uploadId, asset, partSize, uploaded)
                 }
-                uploadParts(base, token, uploadId, asset, partSize, uploaded)
+                postJson(base.resolve("/api/v1/uploads/$uploadId/complete"), token, JSONObject(), null)
+            } finally {
+                work.deleteRecursively()
             }
-            postJson(base.resolve("/api/v1/uploads/$uploadId/complete"), token, JSONObject(), null)
-        } finally {
-            work.deleteRecursively()
+        } catch (_: org.json.JSONException) {
+            throw CloudSyncException("Cloud returned an invalid upload response. Keep the local recording and update Cloud before retrying.", false)
+        } catch (_: java.io.IOException) {
+            throw CloudSyncException("The Cloud upload connection failed. Check the connection and retry; local files were kept.", true)
         }
+    }
+
+    fun rename(endpoint: String, ownerId: String, token: String, recordingId: String, title: String): Boolean {
+        require(title.isNotBlank() && title.length <= 200) { "Recording names must contain 1–200 characters" }
+        val base = validateSettings(endpoint, ownerId, token)
+        require(recordingId.matches(Regex("[a-f0-9]{64}")))
+        verifyDeviceOwner(endpoint, ownerId, token)
+        val connection = openTitleConnection(base.resolve("/api/v1/recordings/$recordingId"))
+        try {
+            configure(connection, token)
+            connection.requestMethod = "PATCH"
+            connection.setRequestProperty("Content-Type", "application/json")
+            val bytes = com.google.gson.JsonObject().apply { addProperty("title", title) }.toString().toByteArray()
+            connection.doOutput = true
+            connection.setFixedLengthStreamingMode(bytes.size)
+            connection.outputStream.use { it.write(bytes) }
+            if (connection.responseCode == 404) return false
+            if (connection.responseCode in setOf(401, 403)) throw CloudSyncException(
+                "Cloud title update needs valid device credentials with recording access. Reconfigure Cloud in Server settings, then retry the rename.", false)
+            requireSuccess(connection)
+            val response = connection.inputStream.use { input ->
+                val bytes = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    check(bytes.size() + count <= 8192) { "Cloud title receipt is too large" }
+                    bytes.write(buffer, 0, count)
+                }
+                bytes.toString(Charsets.UTF_8.name())
+            }
+            val receipt = runCatching { com.google.gson.JsonParser.parseString(response).asJsonObject }.getOrNull()
+                ?: throw CloudSyncException("Cloud title receipt could not be verified. Update Cloud before retrying.", false)
+            val receiptId = receipt.get("recordingId")
+            val receiptTitle = receipt.get("title")
+            check(receiptId?.isJsonPrimitive == true && receiptId.asJsonPrimitive.isString &&
+                receiptTitle?.isJsonPrimitive == true && receiptTitle.asJsonPrimitive.isString &&
+                receiptId.asString == recordingId && receiptTitle.asString == title) {
+                "Unexpected Cloud title receipt"
+            }
+            return true
+        } catch (_: java.io.IOException) {
+            throw CloudSyncException("The Cloud title-update connection failed. Check the connection and retry the rename.", true)
+        } finally { connection.disconnect() }
+    }
+
+    fun verifyDeviceOwner(endpoint: String, ownerId: String, token: String) {
+        val base = validateSettings(endpoint, ownerId, token)
+        val connection = try { openTitleConnection(base.resolve("/api/v1/device")) }
+        catch (_: java.io.IOException) { throw CloudSyncException("Connect to Cloud to verify device ownership, then retry Server settings.", true) }
+        try {
+            configure(connection, token)
+            connection.requestMethod = "GET"
+            when (connection.responseCode) {
+                401, 403 -> throw CloudSyncException("Reconfigure Cloud with a valid device token that can write recordings.", false)
+                404 -> throw CloudSyncException("Update the Cloud service before verifying this device, then retry Server settings.", false)
+            }
+            requireSuccess(connection)
+            val body = connection.inputStream.use { input ->
+                val bytes = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (bytes.size() + count > 8192) throw CloudSyncException("Cloud device identity was too large to verify.", false)
+                    bytes.write(buffer, 0, count)
+                }
+                bytes.toString(Charsets.UTF_8.name())
+            }
+            val identity = runCatching { com.google.gson.JsonParser.parseString(body).asJsonObject }.getOrNull()
+                ?: throw CloudSyncException("Cloud device identity could not be verified. Update Cloud and retry.", false)
+            val owner = identity.get("ownerId")
+            val device = identity.get("deviceId")
+            if (owner?.isJsonPrimitive != true || !owner.asJsonPrimitive.isString || device?.isJsonPrimitive != true ||
+                !device.asJsonPrimitive.isString || !device.asString.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,127}"))) {
+                throw CloudSyncException("Cloud device identity could not be verified. Update Cloud and retry.", false)
+            }
+            if (owner.asString != ownerId.trim()) throw CloudSyncException(
+                "The device token belongs to a different Cloud owner. Scan the correct owner's QR code or enter its matching owner ID and token.", false)
+        } catch (error: CloudSyncException) { throw error }
+        catch (_: java.io.IOException) { throw CloudSyncException("Connect to Cloud to verify device ownership, then retry Server settings.", true) }
+        finally { connection.disconnect() }
     }
 
     private fun isComplete(base: URI, token: String, recordingId: String): Boolean {
@@ -88,11 +182,10 @@ class CloudSyncClient(private val cache: File) {
 
     private fun validateSettings(endpoint: String, ownerId: String, token: String): URI {
         validateCloudSettings(endpoint, ownerId, token)
-        val uri = URI(endpoint.trim().trimEnd('/'))
-        return uri
+        return URI(canonicalCloudOrigin(endpoint))
     }
 
-    private suspend fun stableId(wav: File, midi: File?): String {
+    internal suspend fun stableId(wav: File, midi: File?): String {
         val digest = MessageDigest.getInstance("SHA-256")
         listOfNotNull(wav, midi).forEach { file -> updateDigest(digest, file) }
         return digest.digest().hex()
@@ -171,15 +264,21 @@ class CloudSyncClient(private val cache: File) {
     }
 
     private fun requireSuccess(connection: HttpURLConnection) {
-        if (connection.responseCode in 200..299) return
-        val detail = connection.errorStream?.bufferedReader()?.use {
-            val buffer = CharArray(4096)
-            val count = it.read(buffer)
-            if (count > 0) String(buffer, 0, count) else ""
-        }.orEmpty()
-        val message = runCatching { JSONObject(detail).getJSONObject("error").getString("message") }.getOrNull()
         val status = connection.responseCode
-        throw CloudSyncException(message ?: "Cloud upload failed (HTTP $status)", status == 408 || status == 429 || status >= 500)
+        if (status in 200..299) return
+        val message = when (status) {
+            400 -> "Cloud rejected the request. Check the recording and update Cloud before retrying."
+            401, 403 -> "Cloud access was denied. Reconfigure the correct owner's device token and retry."
+            404 -> "The Cloud endpoint or recording is unavailable. Update Cloud before retrying."
+            408 -> "The Cloud request timed out. Check the connection and retry."
+            409 -> "Cloud has conflicting data for this recording. Keep the local original and review it before retrying."
+            413 -> "The recording is too large for Cloud. Keep or export the local original."
+            415, 422 -> "Cloud could not validate the recording's format, size, or checksum. Keep the local original and review it."
+            429 -> "Cloud is receiving too many requests. Wait and retry."
+            in 500..599 -> "The Cloud service is temporarily unavailable. Wait and retry; local recordings were kept."
+            else -> "Cloud request failed (HTTP $status). Check the service and retry."
+        }
+        throw CloudSyncException(message, status == 408 || status == 429 || status >= 500)
     }
 
     private data class Asset(val role: String, val contentType: String, val file: File, val sha256: String) {

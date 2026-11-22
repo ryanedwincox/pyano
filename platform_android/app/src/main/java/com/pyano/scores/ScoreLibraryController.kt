@@ -40,16 +40,20 @@ class ScoreLibraryController(
         }
     }
 
-    fun reload() = run("Offline library loaded. Refresh to check Cloud.") { _, _ -> }
+    fun reload() = run("") { _, _ -> }
     fun refresh() = run("Cloud library refreshed; existing offline copies were kept.") { selected, target ->
         target.updateRemote(client.list(selected))
     }
     fun download(score: Score) = run("Score is available offline.") { selected, target ->
         target.download(score) { output -> client.download(selected, score, output) }
     }
+    fun downloadAndOpen(score: Score, onReady: () -> Unit) = run("Score is available offline.", onReady) { selected, target ->
+        target.download(score) { output -> client.download(selected, score, output) }
+    }
     fun remove(score: Score) = run("Local copy removed; Cloud was not changed.") { _, target -> target.remove(score) }
 
     fun cancel() {
+        if (operation?.isActive != true || !mutableState.value.busy) return
         generation++
         operation?.cancel()
         operation = null
@@ -60,7 +64,7 @@ class ScoreLibraryController(
         }
     }
 
-    private fun run(success: String, action: suspend (ScoreProfile, ScoreCache) -> Unit) {
+    private fun run(success: String, onSuccess: () -> Unit = {}, action: suspend (ScoreProfile, ScoreCache) -> Unit) {
         val selected = profile ?: return
         val target = cache ?: return
         if (operation?.isActive == true) return
@@ -68,15 +72,24 @@ class ScoreLibraryController(
         mutableState.value = mutableState.value.copy(busy = true)
         operation = scope.launch {
             try {
-                val rows = withContext(io) { action(selected, target); currentCoroutineContext().ensureActive(); target.rows() }
-                if (token == generation) mutableState.value = mutableState.value.copy(rows = rows, busy = false, message = success)
+                val (rows, cleanupWarning) = withContext(io) {
+                    action(selected, target)
+                    currentCoroutineContext().ensureActive()
+                    target.rows() to target.cleanupWarning
+                }
+                if (token == generation) {
+                    mutableState.value = mutableState.value.copy(rows = rows, busy = false, message = cleanupWarning ?: success)
+                    onSuccess()
+                }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 if (token == generation) {
                     val rows = try { withContext(io) { target.rows() } } catch (_: Exception) { null }
                     if (token == generation) mutableState.value = mutableState.value.copy(
                         rows = rows ?: mutableState.value.rows, busy = false,
-                        message = (e as? ScoreFailure)?.message ?: "Score operation failed. Check storage or connection and retry; offline copies were kept."
+                        message = listOfNotNull((e as? ScoreFailure)?.message
+                            ?: "Score operation failed. Check storage or connection and retry; offline copies were kept.",
+                            target.cleanupWarning).distinct().joinToString("\n")
                     )
                 }
             }

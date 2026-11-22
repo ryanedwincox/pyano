@@ -18,8 +18,19 @@ class CloudUploadWorker(context: Context, parameters: WorkerParameters) : Corout
         val title = inputData.getString(KEY_TITLE) ?: return failure("Recording title is missing")
         val capturedAt = inputData.getString(KEY_CAPTURED_AT) ?: return failure("Capture time is missing")
         if (!wav.isFile || durationMs <= 0) return failure("Queued recording is no longer available")
-        val credentials = CloudCredentialsStore(applicationContext).load(profileId) ?: return failure("Cloud credentials are unavailable")
+        val credentialStore = CloudCredentialsStore(applicationContext)
+        val credentials = credentialStore.recordingCredentials(profileId) ?: return failure("Cloud credentials are unavailable")
         return try {
+            val titles = RecordingTitleSync(applicationContext)
+            val localId = inputData.getString(KEY_RECORDING_ID)
+            val client = CloudSyncClient(applicationContext.cacheDir)
+            if (localId != null) {
+                val actualRemote = client.stableId(wav, com.pyano.audio.RecordingBundleFiles.midi(wav).takeIf { it.isFile })
+                val binding = titles.bind(localId, profileId, actualRemote, title)
+                validateRecordingUploadBinding(binding, profileId, actualRemote) { first, second ->
+                    credentialStore.load(first)?.let { old -> credentialStore.load(second)?.let { sameCloudOwner(old, it) } } == true
+                }
+            }
             CloudSyncClient(applicationContext.cacheDir).upload(
                 wav,
                 title,
@@ -29,11 +40,17 @@ class CloudUploadWorker(context: Context, parameters: WorkerParameters) : Corout
                 credentials.ownerId,
                 credentials.token,
             )
-            inputData.getString(KEY_RECORDING_ID)?.let { RecordingCloudStatus(applicationContext).complete(it) }
+            val titleError = localId?.let { recordingId -> recordUploadCompletion(
+                { RecordingCloudStatus(applicationContext).complete(recordingId) },
+                { titles.desired(recordingId) != null },
+                { queueRecordingTitle(applicationContext, recordingId) }) }
             Log.i("PyanoCloudUpload", "Upload completed job=$id")
-            Result.success(Data.Builder().putString(KEY_SNAPSHOT_PATH, wav.absolutePath).build())
+            Result.success(Data.Builder().putString(KEY_SNAPSHOT_PATH, wav.absolutePath)
+                .apply { if (titleError != null) putString(KEY_TITLE_ERROR, titleError) }.build())
         } catch (error: CancellationException) {
             throw error
+        } catch (error: RecordingOwnerUnverified) {
+            failure(checkNotNull(error.message))
         } catch (error: CloudSyncException) {
             Log.w("PyanoCloudUpload", "Upload rejected job=$id attempt=$runAttemptCount retryable=${error.retryable}: ${error.message}")
             if (error.retryable && runAttemptCount < 5) Result.retry() else failure(error.message ?: "Cloud upload failed")
@@ -58,5 +75,16 @@ class CloudUploadWorker(context: Context, parameters: WorkerParameters) : Corout
         const val KEY_CAPTURED_AT = "capturedAt"
         const val KEY_ERROR = "error"
         const val KEY_SNAPSHOT_PATH = "snapshotPath"
+        const val KEY_TITLE_ERROR = "titleError"
     }
+}
+
+internal suspend fun recordUploadCompletion(markComplete: () -> Unit, hasPendingTitle: () -> Boolean,
+    queueTitle: suspend () -> Unit): String? {
+    markComplete()
+    return try {
+        if (hasPendingTitle()) queueTitle()
+        null
+    } catch (error: CancellationException) { throw error }
+    catch (_: Exception) { "Audio was uploaded, but its name update could not be queued. Retry the recording rename." }
 }

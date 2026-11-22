@@ -3,6 +3,7 @@
 
 **Prerequisites:** Android SDK platforms 34 & 35, the NDK, CMake **3.22.1**, and
 **JDK 21** (Gradle 8.9 does not run on JDK 24/25 — use 21).
+JVM tests also require a host **C++17 compiler** named `c++` for the sustain queue regression.
 
 Important gotchas before your first build:
 

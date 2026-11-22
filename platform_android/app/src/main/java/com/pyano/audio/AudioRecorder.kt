@@ -18,6 +18,8 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -99,9 +101,24 @@ fun readWavHeader(file: File): WavHeader {
     }
 }
 
+fun recordingFileIdentity(file: File): String {
+    val attributes = Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
+    val key = checkNotNull(attributes.fileKey()) { "Could not verify saved take ownership" }
+    return "$key:${attributes.size()}:${attributes.lastModifiedTime().toMillis()}"
+}
+
+class TakePublicationIntent(
+    private val prepare: (String, String, String?) -> Unit = { _, _, _ -> },
+    private val onAbort: (String, String, String?) -> Unit = { _, _, _ -> },
+) {
+    operator fun invoke(path: String, wavIdentity: String, midiIdentity: String?) = prepare(path, wavIdentity, midiIdentity)
+    fun abandon(path: String, wavIdentity: String, midiIdentity: String?) = onAbort(path, wavIdentity, midiIdentity)
+}
+
 class AudioRecorder(
     private val engine: FluidSynthEngine,
     private val context: Context,
+    private val publicationFactory: (File, File) -> RecordingTakePublication = { journals, output -> RecordingTakePublication(journals, output) },
     private val recordingsDirectory: () -> File = {
         File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Pyano")
     }
@@ -126,6 +143,45 @@ class AudioRecorder(
     private var tempPcmFile: File? = null
     private var pendingMidi: ByteArray? = null
     private var pendingWav: String? = null
+    private var pendingName: String? = null
+    private var pendingWavIdentity: String? = null
+    private var pendingMidiIdentity: String? = null
+    private var pendingPublicationJournal: File? = null
+    private var pendingSaveIntent: TakePublicationIntent? = null
+    private var publishedWav: PublishedTakeFile? = null
+    private var publishedMidi: PublishedTakeFile? = null
+
+    private data class PublishedTakeFile(val file: File, val identity: String) {
+        fun stillOwned(): Boolean = runCatching {
+            recordingFileProof(file) == identity
+        }.getOrDefault(false)
+    }
+
+    private fun ownedFile(file: File) = PublishedTakeFile(file, recordingFileProof(file))
+    private fun abandonTakeIntent() {
+        val path = pendingWav ?: return
+        val identity = pendingWavIdentity ?: return
+        pendingSaveIntent?.abandon(path, identity, pendingMidiIdentity)
+        pendingSaveIntent = null
+    }
+
+    val pendingTakeNameLocked: Boolean
+        get() = synchronized(RecordingBundleFiles) {
+            publishedWav?.stillOwned() == true || publishedMidi?.stillOwned() == true ||
+                pendingWav?.let { path ->
+                    pendingWavIdentity?.let { PublishedTakeFile(File(path), it).stillOwned() } == true ||
+                        path in publications.reservedTargets()
+                } == true || publications.automaticUploadBlocked()
+        }
+
+    private val publications by lazy { publicationFactory(File(context.filesDir, "take-publications"), recordingsDirectory()) }
+    var publicationRecoveryWarning: String? = null
+        private set
+    var publicationRecoveryKey: String? = null
+        private set
+    var automaticUploadBlocked: Boolean = false
+        private set
+
     private var recordingSampleRate: Int = DEFAULT_SAMPLE_RATE
 
     /** Duration of current recording in milliseconds. */
@@ -208,27 +264,83 @@ class AudioRecorder(
         return true
     }
 
-    suspend fun saveTake(onSaved: (String) -> Unit = {}): String? {
+    suspend fun saveTake(name: String? = null, beforePublish: TakePublicationIntent = TakePublicationIntent(), onSaved: (String) -> Unit = {}): String? {
         val tempFile = tempPcmFile ?: return null
         if (!finishTake()) return null
         val midiBytes = pendingMidi
-        val wavPath = pendingWav ?: withContext(Dispatchers.IO) {
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-            File(recordingsDirectory(), "Pyano_${timestamp}_${java.util.UUID.randomUUID()}.wav").absolutePath
-        }.also { pendingWav = it }
-        withContext(Dispatchers.IO) {
-            val wav = File(wavPath)
-            val staging = File(wavPath + ".part")
-            try {
-                if (!wav.exists()) {
-                    check(encodeToWav(tempFile, staging) != null) { "Could not encode take" }
-                    if (midiBytes != null && !RecordingBundleFiles.midi(wav).exists()) {
-                        RecordingBundleFiles.saveMidi(wav) { it.writeBytes(midiBytes) }
+        val wavPath = withContext(Dispatchers.IO) {
+            synchronized(RecordingBundleFiles) {
+                pendingPublicationJournal?.takeIf { it.exists() }?.let { publications.rollback(it) }
+                pendingPublicationJournal = null
+                val stillPublished = pendingWav?.let { path -> pendingWavIdentity?.let { PublishedTakeFile(File(path), it).stillOwned() } } == true
+                if (!stillPublished) abandonTakeIntent()
+            }
+            val output = recordingsDirectory()
+            check(output.mkdirs() || output.isDirectory) { "Could not create recordings directory" }
+            val prior = synchronized(RecordingBundleFiles) {
+                (publishedWav?.takeIf { it.stillOwned() } ?: pendingWav?.let { path ->
+                    pendingWavIdentity?.let { PublishedTakeFile(File(path), it) }?.takeIf { it.stillOwned() }
+                })?.let {
+                    pendingSaveIntent = beforePublish
+                    beforePublish(it.file.absolutePath, it.identity, pendingMidiIdentity)
+                    onSaved(it.file.absolutePath)
+                    it.file.absolutePath
+                }
+            }
+            if (prior != null) {
+                prior
+            } else {
+                val staging = File.createTempFile(".pyano-take-", ".part", output)
+                var midiStaging: File? = null
+                var publicationJournal: File? = null
+                try {
+                    val preparedMidi = if (midiBytes != null) File.createTempFile(".pyano-take-midi-", ".part", output) else null
+                    midiStaging = preparedMidi
+                    val wav = synchronized(RecordingBundleFiles) {
+                        val previous = pendingWav?.takeIf { name?.trim() == pendingName }?.let(::File)
+                        val wav = previous?.takeUnless { it.exists() || RecordingBundleFiles.midi(it).exists() } ?: run {
+                            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+                            if (name == null) File(output, "Pyano_${timestamp}_${java.util.UUID.randomUUID()}.wav")
+                            else RecordingNames.destination(output, name)
+                        }
+                        pendingWav = wav.absolutePath
+                        pendingName = name?.trim()
+                        pendingWavIdentity = null
+                        pendingMidiIdentity = null
+                        val draft = publications.beginDraft(staging, preparedMidi, wav, tempFile.length(), recordingSampleRate, midiBytes)
+                        publicationJournal = draft
+                        pendingPublicationJournal = draft
+                        wav
                     }
-                    onSaved(wavPath)
-                    check(staging.renameTo(wav)) { "Could not publish take" }
-                } else onSaved(wavPath)
-            } finally { staging.delete() }
+                    check(encodeToWav(tempFile, staging) != null) { "Could not encode take" }
+                    preparedMidi?.writeBytes(checkNotNull(midiBytes))
+                    val audioIdentity = ownedFile(staging).identity
+                    val midiIdentity = preparedMidi?.let { ownedFile(it).identity }
+                    synchronized(RecordingBundleFiles) {
+                        pendingWavIdentity = audioIdentity
+                        pendingMidiIdentity = midiIdentity
+                        pendingSaveIntent = beforePublish
+                        beforePublish(wav.absolutePath, audioIdentity, midiIdentity)
+                        val journal = publications.armDraft(checkNotNull(publicationJournal))
+                        publicationJournal = journal
+                        pendingPublicationJournal = journal
+                        onSaved(wav.absolutePath)
+                        publications.publish(journal)
+                        if (preparedMidi != null) publishedMidi = PublishedTakeFile(RecordingBundleFiles.midi(wav), checkNotNull(midiIdentity))
+                        publishedWav = PublishedTakeFile(wav, audioIdentity)
+                        wav.absolutePath
+                    }
+                } catch (error: Exception) {
+                    publicationJournal?.takeIf { it.exists() }?.let { publications.rollback(it) }
+                    if (publicationJournal?.exists() != true) abandonTakeIntent()
+                    throw error
+                } finally {
+                    if (publicationJournal?.exists() != true) {
+                        staging.delete()
+                        midiStaging?.delete()
+                    }
+                }
+            }
         }
         discardTake(saved = true)
 
@@ -237,19 +349,27 @@ class AudioRecorder(
     }
 
     suspend fun discardTake(saved: Boolean = false) = withContext(Dispatchers.IO) {
-        if (!saved) pendingWav?.let {
-            val wav = File(it)
-            if (wav.exists()) RecordingBundleFiles.delete(wav)
-            else {
-                val midi = RecordingBundleFiles.midi(wav)
-                check(!midi.exists() || midi.delete()) { "Could not discard MIDI" }
+        if (!saved) synchronized(RecordingBundleFiles) {
+            pendingPublicationJournal?.takeIf { it.exists() }?.let { publications.rollback(it) }
+            val recoveredWav = pendingWav?.let { path -> pendingWavIdentity?.let { PublishedTakeFile(File(path), it) } }
+            val recoveredMidi = pendingWav?.let { path -> pendingMidiIdentity?.let { PublishedTakeFile(RecordingBundleFiles.midi(File(path)), it) } }
+            listOfNotNull(publishedWav, publishedMidi, recoveredWav, recoveredMidi).distinctBy { it.file.absolutePath }.forEach { owned ->
+                check(!owned.stillOwned() || owned.file.delete()) { "Could not discard take; try again" }
             }
+            abandonTakeIntent()
         }
         val file = tempPcmFile
         check(file == null || !file.exists() || file.delete()) { "Could not remove temporary take; try again" }
         tempPcmFile = null
         pendingMidi = null
         pendingWav = null
+        pendingName = null
+        pendingWavIdentity = null
+        pendingMidiIdentity = null
+        pendingPublicationJournal = null
+        pendingSaveIntent = null
+        publishedWav = null
+        publishedMidi = null
         totalFloatsWritten = 0
     }
 
@@ -370,12 +490,24 @@ class AudioRecorder(
         }
     }
 
+    fun recoverSavedTakes(recoverConflicts: Boolean = false, relocateIntent: PublicationIntentRelocation? = null) {
+        val liveJournal = pendingPublicationJournal?.takeIf { hasPendingTake }?.absolutePath
+        publicationRecoveryWarning = publications.recover(recoverConflicts, relocateIntent, setOfNotNull(liveJournal))
+        publicationRecoveryKey = publications.recoveryKey()
+        automaticUploadBlocked = publications.automaticUploadBlocked()
+    }
+
+    fun publicationReserves(path: String): Boolean = synchronized(RecordingBundleFiles) {
+        path in publications.reservedTargets() || publications.automaticUploadBlocked()
+    }
+
     fun getSavedRecordings(): List<RecordingInfo> {
+        recoverSavedTakes()
         val pyanoDir = recordingsDirectory()
         if (!pyanoDir.exists()) return emptyList()
-
+        val unresolved = publications.unresolvedTargets()
         return pyanoDir.listFiles()
-            ?.filter { it.extension.equals("wav", ignoreCase = true) }
+            ?.filter { it.extension.equals("wav", ignoreCase = true) && it.absolutePath !in unresolved }
             ?.map { file ->
                 val sizeBytes = file.length()
                 val sampleRate = readWavSampleRate(file)
@@ -406,10 +538,13 @@ class AudioRecorder(
         Log.i(TAG, "Recording cancelled")
     }
 
-    fun renameRecording(path: String, newName: String): String =
+    fun renameRecording(path: String, newName: String): String = synchronized(RecordingBundleFiles) {
+        check(!publicationReserves(path)) { "Use Recover before renaming a recording involved in interrupted take publication" }
         RecordingBundleFiles.rename(File(path), newName.trim()).absolutePath
+    }
 
-    fun deleteRecording(path: String) {
+    fun deleteRecording(path: String) = synchronized(RecordingBundleFiles) {
+        check(!publicationReserves(path)) { "Use Recover before deleting a recording involved in interrupted take publication" }
         RecordingBundleFiles.delete(File(path))
     }
 }

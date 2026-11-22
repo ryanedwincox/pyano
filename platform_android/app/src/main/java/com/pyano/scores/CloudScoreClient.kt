@@ -28,7 +28,7 @@ class HttpScoreTransport : ScoreTransport {
         connection.connectTimeout = 15_000
         connection.readTimeout = 20_000
         connection.setRequestProperty("Authorization", "Bearer ${profile.credentials.token}")
-        connection.setRequestProperty("Accept", if (path.contains("/download")) "application/pdf" else "application/json")
+        connection.setRequestProperty("Accept", if (path.endsWith("/pdf")) "application/pdf" else "application/json")
         return object : ScoreResponse {
             override val status get() = connection.responseCode
             override val contentType get() = connection.contentType
@@ -45,7 +45,7 @@ class CloudScoreClient(private val transport: ScoreTransport = HttpScoreTranspor
         val cursors = mutableSetOf<String>()
         var cursor: String? = null
         do {
-            val path = "/api/v1/scores?limit=100" + (cursor?.let { "&cursor=" + URLEncoder.encode(it, "UTF-8") } ?: "")
+            val path = "/api/v1/scores" + (cursor?.let { "?cursor=" + URLEncoder.encode(it, "UTF-8") } ?: "")
             val page = response(profile, path, "application/json") { response ->
                 val bytes = response.body().use { input ->
                     val output = java.io.ByteArrayOutputStream()
@@ -61,7 +61,7 @@ class CloudScoreClient(private val transport: ScoreTransport = HttpScoreTranspor
             val scores = page.get("scores") ?: scoreFailure()
             if (!scores.isJsonArray || scores.asJsonArray.size() > 100) scoreFailure()
             for (entry in scores.asJsonArray) {
-                val score = decodeScore(entry)
+                val score = decodeCloudScore(entry)
                 if (!seen.add(score.scoreId) || result.size >= MAX_SCORES) scoreFailure()
                 result.add(score)
             }
@@ -73,7 +73,7 @@ class CloudScoreClient(private val transport: ScoreTransport = HttpScoreTranspor
     }
 
     suspend fun download(profile: ScoreProfile, score: Score, output: OutputStream) {
-        response(profile, "/api/v1/scores/${score.scoreId}/download", "application/pdf") { response ->
+        response(profile, "/api/v1/scores/${score.scoreId}/pdf", "application/pdf") { response ->
             response.body().use { input -> copyBounded(input, output, score.sizeBytes) }
         }
     }
@@ -89,7 +89,8 @@ class CloudScoreClient(private val transport: ScoreTransport = HttpScoreTranspor
                     try {
                         when (response.status) {
                             200 -> Unit
-                            401, 403 -> throw ScoreFailure("Provision a new Cloud device token with scores:read permission in Recorder settings.")
+                            400 -> throw ScoreFailure("Cloud rejected the score request. Update Pyano or contact the Cloud administrator; offline copies are kept.")
+                            401, 403 -> throw ScoreFailure("Provision a new Cloud device token with scores:read permission in Server settings.")
                             404 -> throw ScoreFailure("This score is no longer available. Refresh the library; offline copies are kept.")
                             else -> throw ScoreFailure("Cloud scores are unavailable. Retry when connected; offline copies are kept.")
                         }

@@ -18,6 +18,7 @@
 
 #include "heap-warmer.h"
 #include "ring-buffer.h"
+#include "sustain-release.h"
 
 extern "C" {
 #include <fluidsynth.h>
@@ -49,6 +50,7 @@ struct SynthEvent {
     Type type;
     int32_t i[4];
     float f[4];
+    uint64_t order = 0;
 };
 
 struct CachedPreset {
@@ -67,10 +69,12 @@ public:
 
     // Event queue: any number of producers serialized by producerMutex, one consumer (the RT callback) that never takes a lock.
     static constexpr size_t kEventQueueCapacity = 1024;
-    // Slots only NoteOff/ProgramSelect/ReverbOn may use, so a backlog of notes or pedal CCs (e.g. while a SoundFont loads) can't crowd out a NoteOff.
+    // NoteOff/ProgramSelect/ReverbOn reserve; sustain-off uses its dedicated FIFO instead.
     static constexpr size_t kReservedEventSlots = 256;
     SpscRingBuffer<SynthEvent> eventQueue{kEventQueueCapacity};
     std::mutex producerMutex;
+    uint64_t nextEventOrder = 0;
+    OrderedSustainRelease sustainRelease;
     // Set when a NoteOff had to be dropped anyway; the callback silences all notes.
     std::atomic<bool> allNotesOffPending{false};
     // Skip stale queued NoteOns after downtime or synth loading so they do not sound late.
@@ -99,7 +103,7 @@ public:
     std::atomic<int> lastCallbackFrames{0};
     std::atomic<int> maxCallbackMicros{0};
     std::atomic<int> peakActiveVoices{0};
-    std::atomic<int> droppedEvents{0};          // queue full; event discarded
+    std::atomic<int> droppedEvents{0};          // main queue full; event discarded or deferred
     std::atomic<int> lockedOutCallbacks{0};     // callback output silence: synth busy (load)
     std::atomic<int> maxCallbackCpu{-1};        // core that ran the slowest callback (big vs little)
     std::atomic<int> slowCallbacks{0};          // callbacks that used over 80% of their time
@@ -378,17 +382,25 @@ public:
 
     // Called from any non-RT thread. Never blocks on the audio thread.
     void pushEvent(const SynthEvent& ev) {
+        const bool pedalOff = ev.type == SynthEvent::CC && ev.i[1] == 64 && ev.i[2] < 64;
         bool essential = ev.type == SynthEvent::NoteOff || ev.type == SynthEvent::ProgramSelect ||
-                         ev.type == SynthEvent::ReverbOn;
+                         ev.type == SynthEvent::ReverbOn || pedalOff;
         if (pausedForIdle.load(std::memory_order_acquire)) {
             // Drain queued controls here while output is paused so a CC backlog cannot crowd out the note that wakes it.
             std::unique_lock<std::mutex> synthLock(synthMutex, std::try_to_lock);
             if (synthLock.owns_lock() && synth) drainEvents();
         }
         std::lock_guard<std::mutex> lock(producerMutex);
-        bool roomForIt = essential || eventQueue.availableWrite() > kReservedEventSlots;
-        if (!roomForIt || eventQueue.write(&ev, 1) == 0) {
+        SynthEvent ordered = ev;
+        ordered.order = ++nextEventOrder;
+        if (ev.type == SynthEvent::CC && ev.i[1] == 64 && ev.i[2] >= 64 && !sustainRelease.canAcceptPedalOn(ev.i[0])) {
             droppedEvents.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        bool roomForIt = hasSynthEventQueueRoom(eventQueue.availableWrite(), kReservedEventSlots, essential, pedalOff);
+        if (!roomForIt || eventQueue.write(&ordered, 1) == 0) {
+            droppedEvents.fetch_add(1, std::memory_order_relaxed);
+            if (pedalOff) sustainRelease.defer(ev.i[0], ordered.order);
             if (ev.type == SynthEvent::NoteOff) {
                 allNotesOffPending.store(true, std::memory_order_release);
             }
@@ -455,8 +467,7 @@ public:
     // The callback, or pushEvent while paused for idle; synthMutex held either way, which keeps it a single consumer.
     void drainEvents() {
         bool skipNoteOns = discardQueuedNoteOns.exchange(false, std::memory_order_relaxed);
-        SynthEvent ev;
-        while (eventQueue.read(&ev, 1) == 1) {
+        drainSustainOrdered<SynthEvent>(eventQueue, sustainRelease, [this, skipNoteOns](const SynthEvent& ev) {
             switch (ev.type) {
                 case SynthEvent::NoteOn:
                     if (!skipNoteOns) fluid_synth_noteon(synth, ev.i[0], ev.i[1], ev.i[2]);
@@ -465,7 +476,8 @@ public:
                     fluid_synth_noteoff(synth, ev.i[0], ev.i[1]);
                     break;
                 case SynthEvent::CC:
-                    fluid_synth_cc(synth, ev.i[0], ev.i[1], ev.i[2]);
+                    if (ev.i[1] != 64 || sustainRelease.acceptPedal(ev.i[0], ev.order))
+                        fluid_synth_cc(synth, ev.i[0], ev.i[1], ev.i[2]);
                     break;
                 case SynthEvent::ProgramSelect:
                     fluid_synth_program_select(synth, ev.i[0], ev.i[1], ev.i[2], ev.i[3]);
@@ -481,7 +493,7 @@ public:
                     fluid_synth_reverb_on(synth, -1, ev.i[0]);
                     break;
             }
-        }
+        }, [this](int channel) { fluid_synth_cc(synth, channel, 64, 0); });
         if (allNotesOffPending.exchange(false, std::memory_order_acquire)) {
             fluid_synth_all_notes_off(synth, -1);
         }

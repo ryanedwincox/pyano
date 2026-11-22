@@ -7,8 +7,11 @@ SoundFont loading, sample-rate changes, and teardown hold `synthMutex`; the
 callback only tries that lock and emits silence rather than blocking.
 
 The event queue serializes producers; its callback consumer takes no producer
-lock. Reserved slots protect NoteOff, ProgramSelect, and ReverbOn from NoteOn/CC
-backlogs. Dropped NoteOff triggers all-notes-off recovery. Stale NoteOns after
+lock. Reserved slots protect NoteOff, ProgramSelect, and ReverbOn. Sustain-off
+uses separate bounded lock-free channel FIFOs once that reserve is reached;
+queued events and deferred releases are merged by producer sequence. New pedal-ons are dropped while no emergency release slot remains,
+so deferred off/on/off edges survive overflow without silencing unrelated loops.
+Dropped NoteOff triggers all-notes-off recovery. Stale NoteOns after
 downtime/loading are discarded. Stream open/close is serialized separately,
 including Oboe error-thread recovery; that mutex is never taken by the callback.
 

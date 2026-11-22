@@ -4,8 +4,20 @@ package com.pyano.ui
 import android.content.ComponentCallbacks2
 import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,6 +27,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
@@ -24,11 +37,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.pyano.viewer.*
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.max
 
+private data class PresentedPage(val page: Int, val bitmap: Bitmap)
+
 @Composable
-fun ScoreViewerScreen(controller: ScoreViewerController) {
+fun ScoreViewerScreen(controller: ScoreViewerController, recording: Boolean = false, recordEnabled: Boolean = true, onRecord: (() -> Unit)? = null) {
     val state by controller.state.collectAsState()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val context = LocalContext.current.applicationContext
@@ -47,7 +63,7 @@ fun ScoreViewerScreen(controller: ScoreViewerController) {
         lifecycle.addObserver(observer); context.registerComponentCallbacks(memory)
         onDispose { lifecycle.removeObserver(observer); context.unregisterComponentCallbacks(memory); controller.unregisterHost(host) }
     }
-    ScoreViewerContent(state, controller::close, controller::page, controller::transform, controller::retry)
+    ScoreViewerContent(state, controller::close, controller::page, controller::transform, controller::retry, recording, recordEnabled, onRecord)
 }
 
 @Composable
@@ -57,28 +73,47 @@ fun ScoreViewerContent(
     onPage: (Int) -> Unit,
     onTransform: (Float, Float, Float) -> Unit,
     onRetry: () -> Unit,
+    recording: Boolean = false,
+    recordEnabled: Boolean = true,
+    onRecord: (() -> Unit)? = null,
 ) {
     val reading = state.reading
     val latestReading by rememberUpdatedState(reading)
+    val latestState by rememberUpdatedState(state)
+    val latestOnPage by rememberUpdatedState(onPage)
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     val bitmap = (state.frame as? BitmapPageFrame)?.bitmap
     val frame = state.frame
+    var retainedPage by remember(state.session) { mutableStateOf<PresentedPage?>(null) }
+    val presentedPage = if (bitmap != null) PresentedPage(reading.page, bitmap)
+        else if (state.loading && retainedPage?.page != reading.page) retainedPage else null
+    SideEffect { retainedPage = presentedPage }
+    val transition = key(state.session) { updateTransition(presentedPage, label = "PDF page transition") }
+    val canNavigate = !state.loading && !transition.isRunning
+    val latestCanNavigate by rememberUpdatedState(canNavigate)
     val fit = if (frame == null || viewport.width == 0 || viewport.height == 0) 0f
         else min(viewport.width.toFloat() / frame.width, viewport.height.toFloat() / frame.height)
-    val overflowX = max(0f, (fit * (frame?.width ?: 0) * reading.zoom - viewport.width) / 2)
-    val overflowY = max(0f, (fit * (frame?.height ?: 0) * reading.zoom - viewport.height) / 2)
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("Back to scores") }
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to scores") }
                 Text(state.source?.score?.title.orEmpty(), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (onRecord != null) IconButton(onClick = onRecord, enabled = recordEnabled) {
+                    Icon(if (recording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                        contentDescription = if (recording) "Stop recording" else "Start recording",
+                        tint = MaterialTheme.colorScheme.error)
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { onPage(-1) }, enabled = state.pageCount > 0 && reading.page > 0) { Text("Previous") }
+                Button(onClick = { onPage(-1) }, enabled = canNavigate && state.pageCount > 0 && reading.page > 0) { Text("Previous") }
                 Text(if (state.pageCount > 0) "Page ${reading.page + 1} of ${state.pageCount}" else "Opening PDF")
-                Button(onClick = { onPage(1) }, enabled = state.pageCount > 0 && reading.page < state.pageCount - 1) { Text("Next") }
-                TextButton(onClick = { onTransform(reading.zoom / 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) { Text("Zoom out") }
-                TextButton(onClick = { onTransform(reading.zoom * 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) { Text("Zoom in") }
+                Button(onClick = { onPage(1) }, enabled = canNavigate && state.pageCount > 0 && reading.page < state.pageCount - 1) { Text("Next") }
+                IconButton(onClick = { onTransform(reading.zoom / 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) {
+                    Icon(Icons.Default.ZoomOut, contentDescription = "Zoom out")
+                }
+                IconButton(onClick = { onTransform(reading.zoom * 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) {
+                    Icon(Icons.Default.ZoomIn, contentDescription = "Zoom in")
+                }
                 TextButton(onClick = { onTransform(1f, 0f, 0f) }, enabled = state.pageCount > 0) { Text("Reset zoom") }
             }
             state.message?.let { message ->
@@ -89,6 +124,29 @@ fun ScoreViewerContent(
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             Box(Modifier.testTag("pdf-viewport").fillMaxWidth().weight(1f).clipToBounds().onSizeChanged { viewport = it }
+                .pointerInput(state.session, viewport) {
+                    val threshold = 64.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        val initial = latestState
+                        var singlePointer = true
+                        var displacement = androidx.compose.ui.geometry.Offset.Zero
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.any { it.id != down.id }) singlePointer = false
+                            val pointer = event.changes.firstOrNull { it.id == down.id }
+                            if (pointer != null) displacement = pointer.position - down.position
+                        } while (event.changes.any { it.pressed })
+                        val current = latestState
+                        if (latestCanNavigate && singlePointer && initial.frame != null && current.frame != null && !initial.loading && !current.loading &&
+                            initial.reading.zoom == 1f && current.reading.zoom == 1f &&
+                            initial.session == current.session && initial.reading.page == current.reading.page &&
+                            abs(displacement.x) >= threshold && abs(displacement.x) > abs(displacement.y) * 1.5f) {
+                            val delta = if (displacement.x < 0) 1 else -1
+                            if (current.reading.page + delta in 0 until current.pageCount) latestOnPage(delta)
+                        }
+                    }
+                }
                 .pointerInput(state.session, viewport, frame?.width, frame?.height) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         val current = latestReading
@@ -101,11 +159,33 @@ fun ScoreViewerContent(
                             if (nextY > 0) (current.panY * currentY + pan.y) / nextY else 0f)
                     }
                 }, contentAlignment = Alignment.Center) {
-                if (bitmap != null) Image(bitmap.asImageBitmap(), contentDescription = "PDF page ${reading.page + 1}",
-                    modifier = Modifier.fillMaxSize().graphicsLayer {
-                        scaleX = reading.zoom; scaleY = reading.zoom
-                        translationX = reading.panX * overflowX; translationY = reading.panY * overflowY
-                    })
+                if (presentedPage != null) transition.AnimatedContent(
+                    modifier = Modifier.fillMaxSize(),
+                    contentKey = { it?.page },
+                    transitionSpec = {
+                        if (initialState == null || targetState == null) EnterTransition.None togetherWith ExitTransition.None
+                        else {
+                            val direction = if (targetState!!.page > initialState!!.page) 1 else -1
+                            slideInHorizontally(tween(240)) { it * direction } togetherWith
+                                slideOutHorizontally(tween(240)) { -it * direction }
+                        }
+                    },
+                ) { page ->
+                    if (page != null) {
+                        val currentPage = page.page == reading.page && page.bitmap === bitmap
+                        val pageZoom = if (currentPage) reading.zoom else 1f
+                        val pageFit = if (viewport.width == 0 || viewport.height == 0) 0f else
+                            min(viewport.width.toFloat() / page.bitmap.width, viewport.height.toFloat() / page.bitmap.height)
+                        val pageOverflowX = max(0f, (pageFit * page.bitmap.width * pageZoom - viewport.width) / 2)
+                        val pageOverflowY = max(0f, (pageFit * page.bitmap.height * pageZoom - viewport.height) / 2)
+                        Image(page.bitmap.asImageBitmap(), contentDescription = "PDF page ${page.page + 1}",
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                scaleX = pageZoom; scaleY = pageZoom
+                                translationX = if (currentPage) reading.panX * pageOverflowX else 0f
+                                translationY = if (currentPage) reading.panY * pageOverflowY else 0f
+                            })
+                    }
+                }
             }
         }
     }

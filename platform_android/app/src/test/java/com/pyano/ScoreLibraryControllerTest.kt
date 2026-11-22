@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.atomic.AtomicBoolean
@@ -134,15 +135,115 @@ class ScoreLibraryControllerTest {
         try {
             controller.select(selected); waitFor { !controller.state.value.busy }
             assertFalse(controller.state.value.rows.single().downloaded)
-            armed.set(true); controller.download(score)
+            var opened = false
+            armed.set(true); controller.downloadAndOpen(score) { opened = true }
             assertTrue(withContext(Dispatchers.IO) { committed.await(5, TimeUnit.SECONDS) })
             controller.cancel()
             release.countDown()
             waitFor { !controller.state.value.busy }
             assertTrue(controller.state.value.rows.single().downloaded)
             assertTrue(controller.state.value.message.contains("completed changes were kept"))
+            assertFalse(opened)
             assertArrayEquals(bytes, ScoreCache(root, selected).localFile(score)!!.readBytes())
         } finally { release.countDown(); scope.cancel() }
+    }
+
+    @Test fun titleOpenWaitsForVerifiedDownloadAndNeverOpensAfterFailure() = runBlocking {
+        val root = temp.newFolder()
+        val selected = profile("a")
+        val bytes = "%PDF-1.4\nopen on download".toByteArray()
+        val score = Score("open", "Cloud piece", "1", bytes.size.toLong(), scoreHash(bytes))
+        ScoreCache(root, selected).updateRemote(listOf(score))
+        var requests = 0
+        val client = CloudScoreClient { _, _ ->
+            requests++
+            object : ScoreResponse {
+                override val status = 200
+                override val contentType = "application/pdf"
+                override fun body() = ByteArrayInputStream(bytes)
+                override fun close() { }
+            }
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val controller = ScoreLibraryController(root, scope, client)
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        try {
+            controller.select(selected); waitFor { !controller.state.value.busy }
+            withTimeout(5000) { scope.coroutineContext[Job]!!.children.toList().joinAll() }
+            controller.downloadAndOpen(score) { opens.incrementAndGet() }
+            waitFor { opens.get() == 1 }
+            withTimeout(5000) { scope.coroutineContext[Job]!!.children.toList().joinAll() }
+            assertTrue(controller.state.value.rows.single().downloaded)
+            controller.downloadAndOpen(score) { opens.incrementAndGet() }
+            waitFor { opens.get() == 2 }
+            withTimeout(5000) { scope.coroutineContext[Job]!!.children.toList().joinAll() }
+            assertEquals(1, requests)
+            controller.downloadAndOpen(score.copy(sha256 = "a".repeat(64))) { opens.incrementAndGet() }
+            withTimeout(5000) { scope.coroutineContext[Job]!!.children.toList().joinAll() }
+            assertFalse(controller.state.value.busy)
+            assertEquals(2, requests)
+            assertEquals(2, opens.get())
+        } finally { scope.cancel() }
+    }
+
+    @Test fun cachedPdfStillOpensWhenUnrelatedOrphanCleanupFails() = runBlocking {
+        val root = temp.newFolder()
+        val selected = profile("a")
+        val bytes = "%PDF-1.4\nverified cached score".toByteArray()
+        val score = Score("cached", "Cached PDF", "1", bytes.size.toLong(), scoreHash(bytes))
+        val cache = ScoreCache(root, selected)
+        cache.updateRemote(listOf(score))
+        cache.download(score) { it.write(bytes) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val controller = ScoreLibraryController(root, scope, CloudScoreClient { _, _ -> error("Cached open must not access network") })
+        val opened = CompletableDeferred<Unit>()
+        try {
+            controller.select(selected)
+            waitFor { !controller.state.value.busy }
+            assertTrue(controller.state.value.rows.single().downloaded)
+            val orphan = File(root, "${selected.namespace}/orphan.part").apply { check(mkdir()) }
+            File(orphan, "retained").writeText("cannot delete nonempty orphan directory")
+            controller.downloadAndOpen(score) { opened.complete(Unit) }
+            withTimeout(5000) { opened.await() }
+            assertFalse(controller.state.value.busy)
+            assertTrue(controller.state.value.rows.single().downloaded)
+            assertTrue(controller.state.value.message.contains("cleanup", ignoreCase = true))
+            assertArrayEquals(bytes, cache.openReadLease(score) { it.readBytes() })
+            assertTrue(orphan.isDirectory)
+        } finally { scope.cancel() }
+    }
+
+    @Test fun returningFromCachedPdfDoesNotCancelCompletedOpenOrStartAnIdleOperation() = runBlocking {
+        val root = temp.newFolder()
+        val selected = profile("a")
+        val bytes = "%PDF-1.4\ncached viewer page".toByteArray()
+        val score = Score("cached", "Cached PDF", "1", bytes.size.toLong(), scoreHash(bytes))
+        val cache = ScoreCache(root, selected)
+        cache.updateRemote(listOf(score))
+        cache.download(score) { it.write(bytes) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val controller = ScoreLibraryController(root, scope, CloudScoreClient { _, _ -> error("Cached open must not access network") })
+        val opened = CompletableDeferred<ScoreLibraryState>()
+        try {
+            controller.select(selected)
+            waitFor { !controller.state.value.busy }
+            withTimeout(5000) { scope.coroutineContext[Job]!!.children.toList().joinAll() }
+            val idle = controller.state.value
+            controller.cancel()
+            assertEquals(idle, controller.state.value)
+            controller.downloadAndOpen(score) {
+                controller.cancel()
+                opened.complete(controller.state.value)
+            }
+            val atOpen = withTimeout(5000) { opened.await() }
+            assertFalse(atOpen.busy)
+            assertFalse(atOpen.message.contains("cancel", ignoreCase = true))
+            assertTrue(atOpen.rows.single().downloaded)
+            withTimeout(5000) { scope.coroutineContext[Job]!!.children.toList().joinAll() }
+            controller.cancel()
+            assertEquals(atOpen, controller.state.value)
+            assertFalse(controller.state.value.busy)
+        } finally { scope.cancel() }
     }
 
 }

@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 
 class CloudScoreClientTest {
     private val profile = ScoreProfile("profile_test", CloudCredentials("https://music.example.com", "owner", "private-fixture-token"))
-    private val entry = """{"scoreId":"s_1","title":"Sonata","version":1,"sizeBytes":9,"sha256":"${"a".repeat(64)}"}"""
+    private val entry = """{"id":"s_1","title":"Sonata","metadataVersion":1,"sizeBytes":9,"sha256":"${"a".repeat(64)}","contentType":"application/pdf","createdAt":"2026-11-20T10:00:00Z","updatedAt":"2026-11-20T10:00:00Z","downloadUrl":"/api/v1/scores/s_1/pdf"}"""
     private fun page(entries: String = entry, cursor: String = "null") = """{"scores":[$entries],"nextCursor":$cursor}"""
     private class Response(
         val bytes: ByteArray,
@@ -37,9 +37,27 @@ class CloudScoreClientTest {
                 .also { responses.add(it) }
         }
         assertEquals(listOf("s_1", "s_2"), client.list(profile).map { it.scoreId })
-        assertEquals("/api/v1/scores?limit=100&cursor=x%2Fy%2Bz", paths.last())
+        assertEquals("/api/v1/scores", paths.first())
+        assertEquals("/api/v1/scores?cursor=x%2Fy%2Bz", paths.last())
         assertTrue(paths.none { it.contains("owner") || it.contains(profile.credentials.token) })
         assertTrue(responses.all { it.closed })
+    }
+
+    @Test fun cloudProjectionMapsToCacheIdentityAndDownloadsFromFixedPdfRoute() = runBlocking {
+        val paths = mutableListOf<String>()
+        val pdf = "%PDF-test".toByteArray()
+        val client = CloudScoreClient { _, path ->
+            paths.add(path)
+            if (path == "/api/v1/scores") Response(page(entry.replace("/api/v1/scores/s_1/pdf", "https://untrusted.example/pdf")).toByteArray())
+            else Response(pdf, contentType = "application/pdf")
+        }
+        val score = client.list(profile).single()
+        assertEquals("s_1", score.scoreId)
+        assertEquals("1", score.version)
+        val output = ByteArrayOutputStream()
+        client.download(profile, score, output)
+        assertArrayEquals(pdf, output.toByteArray())
+        assertEquals(listOf("/api/v1/scores", "/api/v1/scores/s_1/pdf"), paths)
     }
 
     @Test fun rejectsMalformedTypesTraversalLimitsAndDuplicateIdentities() = runBlocking {
@@ -47,6 +65,8 @@ class CloudScoreClientTest {
             "{}", "[]", page(entry.replace("s_1", "../bad")), page(entry.replace("9,", "0,")),
             page(entry.replace("9,", "26214401,")), page(entry.replace("9,", "\"9\",")),
             page(entry.replace(":1,", ":0,")), page(entry.replace("Sonata", "t".repeat(201))),
+            page(entry.replace("application/pdf", "text/html")), page(entry.replace("metadataVersion", "version")),
+            page(entry.replace("\"id\"", "\"scoreId\"")), page(entry.replace("\"metadataVersion\":1", "\"metadataVersion\":\"1\"")),
             page(entry.replace("a".repeat(64), "z".repeat(64))), page("$entry,$entry"),
             page((1..101).joinToString(",") { entry.replace("s_1", "s_$it") }), "x".repeat(1024 * 1024 + 1)
         )
@@ -67,12 +87,13 @@ class CloudScoreClientTest {
     }
 
     @Test fun scopeFailuresRedirectsAndWrongTypesAreActionableWithoutResponseBodies() = runBlocking {
-        for (status in listOf(401, 403, 404, 302, 500)) {
+        for (status in listOf(400, 401, 403, 404, 302, 500)) {
             val response = Response("private-fixture-token remote diagnostics".toByteArray(), status)
             try { CloudScoreClient { _, _ -> response }.list(profile); fail("HTTP failure accepted") }
             catch (e: ScoreFailure) {
                 assertFalse(e.message!!.contains("private-fixture-token"))
                 assertFalse(e.message!!.contains("remote diagnostics"))
+                if (status == 400) assertTrue(e.message!!.contains("Update Pyano"))
                 if (status in listOf(401, 403)) assertTrue(e.message!!.contains("scores:read"))
             }
             assertTrue(response.closed)
@@ -91,7 +112,7 @@ class CloudScoreClientTest {
             Response("%PDF-oversize".toByteArray(), contentType = "application/pdf")
         }
         try { client.download(profile, metadata, ByteArrayOutputStream()); fail("oversize accepted") } catch (_: ScoreFailure) { }
-        assertEquals("/api/v1/scores/s_1/download", path)
+        assertEquals("/api/v1/scores/s_1/pdf", path)
     }
 
     @Test fun cancellationClosesBlockedResponseAndUnblocksReader() = runBlocking {
@@ -116,6 +137,9 @@ class CloudScoreClientTest {
         catch (e: ScoreFailure) { assertTrue(e.message!!.contains("Invalid score metadata")) }
         val unicode = page(entry.replace("Sonata", "夜曲"))
         assertEquals("夜曲", CloudScoreClient { _, _ -> Response(unicode.toByteArray()) }.list(profile).single().title)
+        val emojiTitle = "🎹".repeat(101)
+        val emojiPage = page(entry.replace("Sonata", emojiTitle))
+        assertEquals(emojiTitle, CloudScoreClient { _, _ -> Response(emojiPage.toByteArray()) }.list(profile).single().title)
     }
 
 }

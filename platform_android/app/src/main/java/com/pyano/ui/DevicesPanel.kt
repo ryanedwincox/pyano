@@ -26,6 +26,7 @@ fun DevicesPanel(viewModel: PyanoViewModel) {
     val usbDevices by diagnostics.usbDevices.collectAsState()
     val events by diagnostics.events.collectAsState()
     val problem by viewModel.outputProblem.collectAsState()
+    val warning by viewModel.outputWarning.collectAsState()
     val selectedOutput by viewModel.selectedAudioOutput.collectAsState()
     val timeFormat = remember { SimpleDateFormat("MMM d HH:mm:ss", Locale.US) }
 
@@ -39,6 +40,7 @@ fun DevicesPanel(viewModel: PyanoViewModel) {
                     if (problem != null) {
                         Spacer(Modifier.height(4.dp))
                         Text(problem!!, color = MaterialTheme.colorScheme.error)
+                        if (warning != null) TextButton(onClick = viewModel::dismissOutputWarning) { Text("Dismiss warning") }
                     }
                 }
             }

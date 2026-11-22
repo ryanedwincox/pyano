@@ -30,10 +30,12 @@ class ScoreCache(
     private val directory = File(root, profile.namespace)
     private val manifest = File(directory, "manifest.json")
     private val lock = locks.computeIfAbsent(directory.absolutePath) { Mutex() }
+    @Volatile var cleanupWarning: String? = null
+        private set
 
     suspend fun rows(): List<ScoreRow> = lock.withLock {
         val saved = readManifest()
-        clean(saved)
+        cleanupWarning = try { clean(saved); null } catch (error: ScoreFailure) { error.message }
         val local = saved.cached.associateBy { it.identity }
         val remote = saved.remote.associateBy { it.scoreId }
         val scores = (saved.remote + saved.cached).distinctBy { it.identity }

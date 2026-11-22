@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.pyano.PyanoViewModel
 import com.pyano.sync.RecordingCloudState
+import com.pyano.sync.RecordingUploadWarning
 import com.pyano.audio.RecordingInfo
 import java.io.File
 import java.text.SimpleDateFormat
@@ -40,7 +42,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun RecorderTab(viewModel: PyanoViewModel) {
+fun RecorderTab(viewModel: PyanoViewModel, onServerSettings: () -> Unit = {}) {
     val pendingTake by viewModel.pendingTake.collectAsState()
     val takeBusy by viewModel.takeBusy.collectAsState()
     val cloudStates by viewModel.recordingCloudStates.collectAsState()
@@ -49,7 +51,8 @@ fun RecorderTab(viewModel: PyanoViewModel) {
     val recordings by viewModel.savedRecordings.collectAsState()
     val outputLevel by viewModel.outputLevel.collectAsState()
     val syncBusy by viewModel.syncBusy.collectAsState()
-    val syncStatus by viewModel.syncStatus.collectAsState()
+    val uploadError by viewModel.uploadError.collectAsState()
+    val takeRecoveryAvailable by viewModel.takeRecoveryAvailable.collectAsState()
     val masteringRecording by viewModel.masteringRecording.collectAsState()
 
     // Refresh recordings on first composition
@@ -82,19 +85,14 @@ fun RecorderTab(viewModel: PyanoViewModel) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        LocalSyncPanel(
-            endpoint = viewModel.recordingSyncEndpoint,
-            cloud = viewModel.cloudSyncEnabled,
-            ownerId = viewModel.cloudSyncOwnerId,
-            status = syncStatus,
-            busy = syncBusy,
-            onConfigure = viewModel::configureRecordingSync
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-
         // --- Saved Recordings ---
         RecordingsListCard(
             recordings = recordings,
+            onServerSettings = onServerSettings,
+            uploadError = uploadError,
+            onClearUploadWarning = viewModel::clearUploadWarning,
+            onRecoverSavedTakes = viewModel::recoverSavedTakes,
+            takeRecoveryAvailable = takeRecoveryAvailable,
             cloudStates = cloudStates,
             onRename = { path, newName -> viewModel.renameRecording(path, newName) },
             onDelete = { viewModel.deleteRecording(it) },
@@ -225,10 +223,15 @@ private fun RecordControlCard(
 }
 
 @Composable
-private fun RecordingsListCard(
+internal fun RecordingsListCard(
     recordings: List<RecordingInfo>,
+    onServerSettings: () -> Unit,
+    uploadError: RecordingUploadWarning?,
+    onClearUploadWarning: (RecordingUploadWarning) -> Unit,
+    onRecoverSavedTakes: () -> Unit,
+    takeRecoveryAvailable: Boolean,
     cloudStates: Map<String, RecordingCloudState>,
-    onRename: (String, String) -> Unit,
+    onRename: (String, String) -> Boolean,
     onDelete: (String) -> Unit,
     onMaster: (RecordingInfo) -> Unit,
     onUpload: (RecordingInfo) -> Unit,
@@ -240,11 +243,20 @@ private fun RecordingsListCard(
         colors = CardDefaults.cardColors()
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Saved Recordings",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Saved Recordings", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                uploadError?.let { warning ->
+                    UploadWarning(warning.message, warning.jobId,
+                        onRecover = onRecoverSavedTakes.takeIf { warning.jobId.startsWith("take-publication-recovery:") },
+                        recoveryEnabled = enabled) { onClearUploadWarning(warning) }
+                }
+                if (takeRecoveryAvailable) IconButton(onClick = onRecoverSavedTakes, enabled = enabled) {
+                    Icon(Icons.Default.Restore, contentDescription = "Recover interrupted takes")
+                }
+                IconButton(onClick = onServerSettings) {
+                    Icon(Icons.Default.Settings, contentDescription = "Server settings")
+                }
+            }
 
             if (recordings.isEmpty()) {
                 Box(
@@ -283,10 +295,10 @@ private fun RecordingsListCard(
 }
 
 @Composable
-private fun RecordingRow(
+internal fun RecordingRow(
     recording: RecordingInfo,
     cloudState: RecordingCloudState,
-    onRename: (String) -> Unit,
+    onRename: (String) -> Boolean,
     onDelete: () -> Unit,
     onMaster: () -> Unit,
     onUpload: () -> Unit,
@@ -298,6 +310,7 @@ private fun RecordingRow(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
+    var renameWaiting by remember { mutableStateOf(false) }
 
     // Cleanup media player on disposal
     DisposableEffect(recording.path) {
@@ -403,6 +416,7 @@ private fun RecordingRow(
         // Rename button
         IconButton(enabled = enabled, onClick = {
             renameText = recording.name
+            renameWaiting = false
             showRenameDialog = true
         }) {
             Icon(
@@ -478,20 +492,23 @@ private fun RecordingRow(
             text = {
                 OutlinedTextField(
                     value = renameText,
-                    onValueChange = { renameText = it },
+                    onValueChange = { renameText = it; renameWaiting = false },
                     singleLine = true,
-                    label = { Text("Name") }
+                    label = { Text("Name") },
+                    isError = !com.pyano.audio.RecordingNames.valid(renameText),
+                    supportingText = {
+                        if (!com.pyano.audio.RecordingNames.valid(renameText)) Text("Use a shorter name without / \\ < > : \" | ? * or line breaks.")
+                        else if (renameWaiting) Text("Wait for the current recording operation to finish, then retry.")
+                    }
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        showRenameDialog = false
-                        if (renameText.isNotBlank() && renameText != recording.name) {
-                            onRename(renameText)
-                        }
+                        if (onRename(renameText.trim())) showRenameDialog = false
+                        else renameWaiting = true
                     },
-                    enabled = renameText.isNotBlank()
+                    enabled = com.pyano.audio.RecordingNames.valid(renameText)
                 ) { Text("Rename") }
             },
             dismissButton = {

@@ -35,6 +35,18 @@ class RecordingBundleFilesTest {
         assertEquals("notes", midi.readText())
     }
 
+    @Test fun destinationSidecarCreatedAfterCheckNeverOverwritesIt() {
+        val wav = folder.newFile("original.wav").apply { writeText("wave") }
+        val midi = RecordingBundleFiles.midi(wav).apply { writeText("original midi") }
+        val foreign = File(folder.root, "Occupied.mid")
+        assertThrows(IOException::class.java) {
+            RecordingBundleFiles.rename(wav, "Occupied") { foreign.writeText("foreign midi") }
+        }
+        assertEquals("foreign midi", foreign.readText())
+        assertEquals("original midi", midi.readText())
+        assertEquals("wave", wav.readText())
+    }
+
     @Test
     fun failedWavMoveRollsMidiBack() {
         val missing = File(folder.root, "missing.wav")

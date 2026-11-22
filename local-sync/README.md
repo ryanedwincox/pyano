@@ -15,24 +15,24 @@ python local-sync/server.py
 ```
 
 Open **http://127.0.0.1:8765/**. The server prints the location of its device-token
-file, not the secret itself. Read `local-sync/data/.device-token` locally and
-paste it into Pyano's Recorder → Server settings. The token stays in tablet
-memory for the current app session; the server address is remembered.
+file, not the secret itself. Standalone prototype clients can read
+`local-sync/data/.device-token` locally. The current tablet UI supports Cloud only
+and no longer configures this prototype endpoint; existing local data is retained.
 
-For a USB-connected tablet, forward its loopback port:
+Archived Local prototype tablet clients can forward their loopback port over USB:
 
 ```bash
 adb reverse tcp:8765 tcp:8765
 ```
 
-Use `http://127.0.0.1:8765` in the tablet settings. Alternatively, explicitly bind
+In that archived client, use `http://127.0.0.1:8765` in its settings. Alternatively, explicitly bind
 with `python local-sync/server.py --host 0.0.0.0` on a trusted local network and
 use `http://<computer-LAN-IP>:8765`. The default is loopback. HTTP is enabled only
 in debug APKs; release builds require HTTPS. Local HTTP does not encrypt the
 upload or token. The player and uploaded takes are readable by anyone who can
 reach the server; there is no publication/admin distinction in this prototype.
 
-Record a short take, stop, then tap its cloud-upload icon. Wait for the Uploaded
+In the archived client, record a short take, stop, then tap its cloud-upload icon. Wait for the Uploaded
 message and refresh the browser library. MIDI lights the keyboard below audio:
 green for held keys, amber for sustain. Pause/seek follow audio. Uploads are manual.
 

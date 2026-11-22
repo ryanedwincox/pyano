@@ -129,8 +129,23 @@ val buildTestNativeStub by tasks.registering {
     }
 }
 
+val testSustainRelease by tasks.registering {
+    group = "verification"
+    description = "Compiles and runs the host C++17 sustain queue regression"
+    inputs.files("src/main/cpp/sustain-release.h", "src/main/cpp/ring-buffer.h", "src/test/native/sustain-release-test.cpp")
+    doLast {
+        val output = layout.buildDirectory.dir("native-test").get().asFile.apply { mkdirs() }
+        val binary = File(output, "sustain-release-test")
+        project.exec {
+            commandLine("c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I${file("src/main/cpp")}",
+                file("src/test/native/sustain-release-test.cpp"), "-o", binary)
+        }
+        project.exec { commandLine(binary) }
+    }
+}
+
 tasks.withType<Test>().configureEach {
-    dependsOn(buildTestNativeStub)
+    dependsOn(buildTestNativeStub, testSustainRelease)
     systemProperty("java.library.path",
         listOf(stubNativeDir.absolutePath, System.getProperty("java.library.path"))
             .joinToString(File.pathSeparator))
@@ -156,6 +171,7 @@ dependencies {
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.06.00"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.work:work-testing:2.9.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.12.0")

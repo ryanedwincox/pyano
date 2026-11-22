@@ -213,4 +213,18 @@ class MidiEventHandlerTest {
         assertEquals(0, handler.activeNoteCount)
         assertEquals(2, handler.transposeSemitones)
     }
+    @Test fun switchingInputReleasesOnlyOwnedNotesAndSustainWithoutPanic() {
+        val (handler, engine, captured) = newHandler()
+        handler.setTransposeSemitones(2)
+        handler.onSend(bytes(0x90, 60, 100, 0xB0, 64, 127), 0, 6, 0L)
+        handler.releaseAllNotes()
+        verify(engine).noteOff(0, 62)
+        verify(engine).cc(0, 64, 0)
+        for (channel in 0 until 16) verify(engine, never()).cc(channel, 123, 0)
+        for (channel in 1 until 16) verify(engine, never()).cc(channel, 64, 0)
+        assertTrue(captured.contains(Event(0, MidiEventType.NOTE_OFF, 62, 0)))
+        assertTrue(captured.contains(Event(0, MidiEventType.CONTROL_CHANGE, 64, 0)))
+        assertEquals(0, handler.activeNoteCount)
+    }
+
 }

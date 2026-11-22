@@ -32,4 +32,13 @@ class CloudSettingsTest {
         assertThrows(IllegalArgumentException::class.java) { validateUploadPartSize(64 * 1024 * 1024) }
         assertThrows(IllegalArgumentException::class.java) { validateUploadPartSize(1024) }
     }
+    @Test fun partSizeRejectsWrappedLongAndNonIntegerValuesBeforeNarrowing() {
+        assertEquals(5 * 1024 * 1024, validateUploadPartSize(5242880L))
+        assertEquals(16 * 1024 * 1024, validateUploadPartSize(16777216L))
+        assertEquals(5 * 1024 * 1024, validateUploadPartSize(java.math.BigDecimal("5242880.0")))
+        val invalid = listOf<Any?>(4300210176L, Long.MAX_VALUE, Long.MIN_VALUE, 5242880.5, 5242880.0, java.math.BigDecimal("5242880.0000000001"), Double.NaN,
+            Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, "5242880", true, null)
+        for (value in invalid) assertThrows(IllegalArgumentException::class.java) { validateUploadPartSize(value) }
+    }
+
 }
