@@ -27,6 +27,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.pyano.audio.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import com.pyano.audio.BiquadFilter
 import com.pyano.audio.MasteringChain
 import com.pyano.audio.MasteringPlayer
@@ -44,22 +48,33 @@ fun MasteringScreen(
     onDismiss: () -> Unit,
     onExportComplete: () -> Unit
 ) {
-    val player = remember { MasteringPlayer() }
+    val player = remember(recording.path) { MasteringPlayer() }
     val scope = rememberCoroutineScope()
-
-    DisposableEffect(Unit) { onDispose { player.release() } }
-    LaunchedEffect(recording.path) {
-        player.load(recording.path)
-        // Sync engine with UI defaults so displayed values match DSP state
-        player.chain.updateEq(0, 250f, 0f)
-        player.chain.updateEq(1, 1200f, 0f)
-        player.chain.updateEq(2, 8000f, 0f)
-        player.chain.updateCompressor(-18f, 4f, 10f, 150f, 0f)
-        player.chain.updateLimiter(-0.3f, 50f)
+    var settings by remember(recording.path) { mutableStateOf(MasteringSettings()) }
+    var plan by remember(recording.path) { mutableStateOf<MasteringPlan?>(null) }
+    var analysisProgress by remember(recording.path) { mutableFloatStateOf(0f) }
+    var analysisError by remember(recording.path) { mutableStateOf<String?>(null) }
+    DisposableEffect(player) { onDispose { player.release() } }
+    LaunchedEffect(recording.path, settings) {
+        player.stop()
+        plan = null
+        analysisError = null
+        analysisProgress = 0f
+        try {
+            delay(300)
+            player.load(recording.path)
+            val result = analyzeMastering(File(recording.path), settings) { analysisProgress = it }
+            currentCoroutineContext().ensureActive()
+            player.setProcessing(result.chain())
+            plan = result
+            analysisProgress = -1f
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) { analysisError = error.message ?: "Could not analyze recording. Reopen it to retry."; analysisProgress = -1f }
     }
 
     // Collect player state flows
     val isPlaying by player.isPlaying.collectAsState()
+    val playbackError by player.playbackError.collectAsState()
     val playbackPos by player.playbackPosition.collectAsState()
     val leftPeakDb by player.leftPeakDb.collectAsState()
     val rightPeakDb by player.rightPeakDb.collectAsState()
@@ -105,19 +120,23 @@ fun MasteringScreen(
                 }
 
                 val isExporting = exportProgress >= 0f
-                EqSection(player.chain)
-                CompressorSection(player.chain, compressorGrDb)
-                LimiterSection(player.chain, limiterGrDb, limiterActive)
+                val ready = plan?.settings == settings && analysisProgress < 0f && analysisError == null
+                MasteringControls(settings, { if (!isExporting) { player.stop(); settings = it } }, !isExporting,
+                    plan.takeIf { ready }, analysisProgress, analysisError, compressorGrDb, limiterGrDb, limiterActive,
+                    onSeek = { fraction -> if (ready && !isExporting) { player.seekTo(fraction); if (!isPlaying) player.play(scope) } })
                 StereoMetersSection(leftPeakDb, rightPeakDb, leftClip, rightClip) { player.resetClip() }
-                TransportSection(isPlaying, playbackPos, recording.durationMs, player, scope, isExporting)
+                playbackError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                TransportSection(isPlaying, playbackPos, recording.durationMs, player, scope, isExporting || !ready)
                 ExportSection(
                     recording = recording,
                     chain = player.chain,
+                    ready = ready,
+                    sourceIdentity = plan?.sourceIdentity,
                     scope = scope,
                     exportProgress = exportProgress,
                     exportedFile = exportedFile,
                     exportError = exportError,
-                    onExportStart = { exportProgress = 0f; exportError = null },
+                    onExportStart = { player.stop(); exportProgress = 0f; exportError = null },
                     onProgress = { exportProgress = it },
                     onExportDone = { file ->
                         exportProgress = -1f
@@ -137,19 +156,18 @@ fun MasteringScreen(
 // ── EQ Section ──
 
 @Composable
-private fun EqSection(chain: MasteringChain) {
-    var lowFreq by remember { mutableFloatStateOf(250f) }
-    var lowGain by remember { mutableFloatStateOf(0f) }
-    var midFreq by remember { mutableFloatStateOf(1200f) }
-    var midGain by remember { mutableFloatStateOf(0f) }
-    var highFreq by remember { mutableFloatStateOf(8000f) }
-    var highGain by remember { mutableFloatStateOf(0f) }
+internal fun EqSection(settings: MasteringSettings, onChange: (MasteringSettings) -> Unit, enabled: Boolean, sampleRate: Int) {
+    val lowFreq = settings.eq[0].frequency; val lowGain = settings.eq[0].gain
+    val midFreq = settings.eq[1].frequency; val midGain = settings.eq[1].gain
+    val highFreq = settings.eq[2].frequency; val highGain = settings.eq[2].gain
+    fun update(band: Int, frequency: Float, gain: Float) = onChange(settings.copy(
+        eq = settings.eq.mapIndexed { index, value -> if (index == band) MasteringEq(frequency, gain) else value }))
 
-    val curvePoints = remember(lowFreq, lowGain, midFreq, midGain, highFreq, highGain) {
-        val sr = 48000
-        val low = BiquadFilter.lowShelf(lowFreq, lowGain, sr)
-        val mid = BiquadFilter.peakEQ(midFreq, midGain, 1f, sr)
-        val high = BiquadFilter.highShelf(highFreq, highGain, sr)
+    val curvePoints = remember(lowFreq, lowGain, midFreq, midGain, highFreq, highGain, sampleRate) {
+        val sr = sampleRate
+        val low = BiquadFilter.lowShelf(lowFreq.coerceAtMost(sr * .45f), lowGain, sr)
+        val mid = BiquadFilter.peakEQ(midFreq.coerceAtMost(sr * .45f), midGain, 1f, sr)
+        val high = BiquadFilter.highShelf(highFreq.coerceAtMost(sr * .45f), highGain, sr)
         FloatArray(200) { i ->
             val freq = 20f * (20000f / 20f).pow(i.toFloat() / 199f)
             low.evaluateMagnitudeDb(freq, sr) +
@@ -168,23 +186,23 @@ private fun EqSection(chain: MasteringChain) {
 
             Text("Low", style = MaterialTheme.typography.bodyMedium)
             LabeledSlider("Freq", lowFreq, 60f..500f, "%.0f Hz",
-                onValueChange = { lowFreq = it; chain.updateEq(0, it, lowGain) })
+                enabled = enabled, onValueChange = { update(0, it, lowGain) })
             LabeledSlider("Gain", lowGain, -12f..12f, "%+.1f dB",
-                onValueChange = { lowGain = it; chain.updateEq(0, lowFreq, it) })
+                enabled = enabled, onValueChange = { update(0, lowFreq, it) })
 
             Spacer(Modifier.height(4.dp))
             Text("Mid", style = MaterialTheme.typography.bodyMedium)
             LabeledSlider("Freq", midFreq, 200f..8000f, "%.0f Hz",
-                onValueChange = { midFreq = it; chain.updateEq(1, it, midGain) })
+                enabled = enabled, onValueChange = { update(1, it, midGain) })
             LabeledSlider("Gain", midGain, -12f..12f, "%+.1f dB",
-                onValueChange = { midGain = it; chain.updateEq(1, midFreq, it) })
+                enabled = enabled, onValueChange = { update(1, midFreq, it) })
 
             Spacer(Modifier.height(4.dp))
             Text("High", style = MaterialTheme.typography.bodyMedium)
             LabeledSlider("Freq", highFreq, 2000f..16000f, "%.0f Hz",
-                onValueChange = { highFreq = it; chain.updateEq(2, it, highGain) })
+                enabled = enabled, onValueChange = { update(2, it, highGain) })
             LabeledSlider("Gain", highGain, -12f..12f, "%+.1f dB",
-                onValueChange = { highGain = it; chain.updateEq(2, highFreq, it) })
+                enabled = enabled, onValueChange = { update(2, highFreq, it) })
         }
     }
 }
@@ -192,14 +210,10 @@ private fun EqSection(chain: MasteringChain) {
 // ── Compressor Section ──
 
 @Composable
-private fun CompressorSection(chain: MasteringChain, grDb: Float) {
-    var threshold by remember { mutableFloatStateOf(-18f) }
-    var ratio by remember { mutableFloatStateOf(4f) }
-    var attack by remember { mutableFloatStateOf(10f) }
-    var release by remember { mutableFloatStateOf(150f) }
-    var makeup by remember { mutableFloatStateOf(0f) }
-
-    fun syncCompressor() = chain.updateCompressor(threshold, ratio, attack, release, makeup)
+internal fun CompressorSection(settings: MasteringSettings, onChange: (MasteringSettings) -> Unit, grDb: Float, enabled: Boolean) {
+    val compression = settings.compression
+    val threshold = compression.threshold; val ratio = compression.ratio
+    val attack = compression.attack; val release = compression.release; val makeup = compression.makeup
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -209,15 +223,15 @@ private fun CompressorSection(chain: MasteringChain, grDb: Float) {
             GainReductionMeter(grDb = grDb, maxDb = 20f, color = MaterialTheme.colorScheme.tertiary)
             Spacer(Modifier.height(8.dp))
             LabeledSlider("Thresh", threshold, -60f..0f, "%.1f dB",
-                onValueChange = { threshold = it; syncCompressor() })
+                enabled = enabled, onValueChange = { onChange(settings.copy(compression = compression.copy(threshold = it))) })
             LabeledSlider("Ratio", ratio, 1f..20f, "%.1f:1",
-                onValueChange = { ratio = it; syncCompressor() })
+                enabled = enabled, onValueChange = { onChange(settings.copy(compression = compression.copy(ratio = it))) })
             LabeledSlider("Attack", attack, 0.1f..100f, "%.1f ms",
-                onValueChange = { attack = it; syncCompressor() })
+                enabled = enabled, onValueChange = { onChange(settings.copy(compression = compression.copy(attack = it))) })
             LabeledSlider("Release", release, 10f..1000f, "%.0f ms",
-                onValueChange = { release = it; syncCompressor() })
+                enabled = enabled, onValueChange = { onChange(settings.copy(compression = compression.copy(release = it))) })
             LabeledSlider("Makeup", makeup, 0f..24f, "%.1f dB",
-                onValueChange = { makeup = it; syncCompressor() })
+                enabled = enabled, onValueChange = { onChange(settings.copy(compression = compression.copy(makeup = it))) })
         }
     }
 }
@@ -225,9 +239,8 @@ private fun CompressorSection(chain: MasteringChain, grDb: Float) {
 // ── Limiter Section ──
 
 @Composable
-private fun LimiterSection(chain: MasteringChain, grDb: Float, active: Boolean) {
-    var ceiling by remember { mutableFloatStateOf(-0.3f) }
-    var release by remember { mutableFloatStateOf(50f) }
+internal fun LimiterSection(settings: MasteringSettings, onChange: (MasteringSettings) -> Unit, grDb: Float, active: Boolean, enabled: Boolean) {
+    val ceiling = settings.ceiling; val release = settings.limiterRelease
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -249,9 +262,9 @@ private fun LimiterSection(chain: MasteringChain, grDb: Float, active: Boolean) 
             GainReductionMeter(grDb = grDb, maxDb = 20f, color = MaterialTheme.colorScheme.error)
             Spacer(Modifier.height(8.dp))
             LabeledSlider("Ceiling", ceiling, -12f..0f, "%.1f dB",
-                onValueChange = { ceiling = it; chain.updateLimiter(it, release) })
+                enabled = enabled, onValueChange = { onChange(settings.copy(ceiling = it)) })
             LabeledSlider("Release", release, 1f..500f, "%.0f ms",
-                onValueChange = { release = it; chain.updateLimiter(ceiling, it) })
+                enabled = enabled, onValueChange = { onChange(settings.copy(limiterRelease = it)) })
         }
     }
 }
@@ -325,6 +338,7 @@ private fun TransportSection(
                 var seekValue by remember { mutableFloatStateOf(0f) }
                 Slider(
                     value = if (seeking) seekValue else playbackPos,
+                    enabled = !isExporting,
                     onValueChange = { seeking = true; seekValue = it },
                     onValueChangeFinished = {
                         player.seekTo(seekValue)
@@ -349,6 +363,8 @@ private fun TransportSection(
 private fun ExportSection(
     recording: RecordingInfo,
     chain: MasteringChain,
+    ready: Boolean,
+    sourceIdentity: String?,
     scope: CoroutineScope,
     exportProgress: Float,
     exportedFile: String?,
@@ -370,7 +386,7 @@ private fun ExportSection(
                     scope.launch {
                         var outputPath: String? = null
                         try {
-                            val result = exportMaster(recording.path, exportChain, onProgress)
+                            val result = exportMaster(recording.path, exportChain, sourceIdentity, onProgress)
                             outputPath = result
                             onExportDone(result.substringAfterLast('/'))
                         } catch (e: CancellationException) {
@@ -383,7 +399,7 @@ private fun ExportSection(
                         }
                     }
                 },
-                enabled = exportProgress < 0f,
+                enabled = exportProgress < 0f && ready,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Export Master")

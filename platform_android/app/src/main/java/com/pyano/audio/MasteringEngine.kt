@@ -1,9 +1,8 @@
 // Concern: processes and exports mastered audio | Non-concern: Compose controls | IO: (WAV and settings) -> processed audio
 package com.pyano.audio
 
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -208,6 +207,7 @@ class Limiter(
     private var writePos = 0
     private var gainReduction = 1f // linear multiplier, <=1
 
+    val currentLinearGain: Float get() = gainReduction
     var currentGainReductionDb: Float = 0f
         private set
     var isActive: Boolean = false
@@ -227,13 +227,15 @@ class Limiter(
 
         // Read from delay line (oldest sample), apply gain reduction
         val delayedSample = delayLine[writePos]
+        val delayedPeak = abs(delayedSample)
+        if (delayedPeak > 0f) gainReduction = minOf(gainReduction, ceiling / delayedPeak)
         val output = delayedSample * gainReduction
 
         // Write new sample into delay line
         delayLine[writePos] = sample
         writePos = (writePos + 1) % lookaheadSamples
 
-        currentGainReductionDb = abs(linearToDb(gainReduction)).coerceIn(0f, 20f)
+        currentGainReductionDb = abs(linearToDb(gainReduction)).coerceIn(0f, 96f)
         isActive = currentGainReductionDb > 0.5f
 
         return output
@@ -243,6 +245,7 @@ class Limiter(
 // MasteringChain — Composes 3-band EQ + compressor + limiter, stereo
 
 class MasteringChain(private val sampleRate: Int = 48000) {
+    init { require(sampleRate in 8000..192000) { "Unsupported sample rate." } }
 
     // 3 EQ bands × 2 channels (L=0, R=1)
     private val eqBands = Array(3) { band ->
@@ -260,41 +263,63 @@ class MasteringChain(private val sampleRate: Int = 48000) {
     private val eqFreqs = floatArrayOf(200f, 1000f, 4000f)
     private val eqGains = floatArrayOf(0f, 0f, 0f)
 
-    // Compressor × 2 channels
-    private val compressors = Array(2) { Compressor(sampleRate = sampleRate) }
+    private val compressor = Compressor(sampleRate = sampleRate)
 
-    // Limiter × 2 channels
-    private val limiters = Array(2) { Limiter(sampleRate = sampleRate) }
+    private val limiter = Limiter(sampleRate = sampleRate)
+    val latencyFrames = (0.005f * sampleRate).toInt()
+    private val delayLeft = FloatArray(latencyFrames)
+    private val delayRight = FloatArray(latencyFrames)
+    private var delayPosition = 0
+    private var inputGainDb = 0f
+    private var outputGainDb = 0f
+    private var inputGain = 1f
+    private var outputGain = 1f
+    var outputLeft = 0f
+        private set
+    var outputRight = 0f
+        private set
 
     val compressorGrDb: Float
-        get() = max(compressors[0].currentGainReductionDb, compressors[1].currentGainReductionDb)
+        get() = compressor.currentGainReductionDb
 
     val limiterGrDb: Float
-        get() = max(limiters[0].currentGainReductionDb, limiters[1].currentGainReductionDb)
+        get() = limiter.currentGainReductionDb
 
     val limiterActive: Boolean
-        get() = limiters[0].isActive || limiters[1].isActive
+        get() = limiter.isActive
+
+    fun processFrame(left: Float, right: Float): Pair<Float, Float> {
+        process(left, right)
+        return Pair(outputLeft, outputRight)
+    }
 
     @Synchronized
-    fun processFrame(left: Float, right: Float): Pair<Float, Float> {
-        var l = left
-        var r = right
-
-        // EQ: 3 bands in series
+    fun process(left: Float, right: Float) {
+        var l = left * inputGain
+        var r = right * inputGain
         for (band in 0..2) {
             l = eqBands[band][0].process(l)
             r = eqBands[band][1].process(r)
         }
+        val peak = max(abs(l), abs(r))
+        val compressedPeak = compressor.process(peak)
+        val compressionGain = if (peak > 0f) compressedPeak / peak else 1f
+        l *= compressionGain * outputGain
+        r *= compressionGain * outputGain
+        limiter.process(max(abs(l), abs(r)))
+        val gain = limiter.currentLinearGain
+        outputLeft = delayLeft[delayPosition] * gain
+        outputRight = delayRight[delayPosition] * gain
+        delayLeft[delayPosition] = l
+        delayRight[delayPosition] = r
+        delayPosition = (delayPosition + 1) % latencyFrames
+    }
 
-        // Compressor
-        l = compressors[0].process(l)
-        r = compressors[1].process(r)
-
-        // Limiter
-        l = limiters[0].process(l)
-        r = limiters[1].process(r)
-
-        return Pair(l, r)
+    @Synchronized
+    fun updateNormalization(inputDb: Float, outputDb: Float) {
+        require(inputDb.isFinite() && outputDb.isFinite() && inputDb in -24f..24f && outputDb in -24f..24f)
+        inputGainDb = inputDb; outputGainDb = outputDb
+        inputGain = dbToLinear(inputDb); outputGain = dbToLinear(outputDb)
     }
 
     @Synchronized
@@ -319,23 +344,19 @@ class MasteringChain(private val sampleRate: Int = 48000) {
         releaseMs: Float,
         makeupGainDb: Float
     ) {
-        for (c in compressors) {
-            c.thresholdDb = thresholdDb
-            c.ratio = ratio
-            c.attackMs = attackMs
-            c.releaseMs = releaseMs
-            c.makeupGainDb = makeupGainDb
-            c.recomputeCoeffs()
-        }
+        compressor.thresholdDb = thresholdDb
+        compressor.ratio = ratio
+        compressor.attackMs = attackMs
+        compressor.releaseMs = releaseMs
+        compressor.makeupGainDb = makeupGainDb
+        compressor.recomputeCoeffs()
     }
 
     @Synchronized
     fun updateLimiter(ceilingDb: Float, releaseMs: Float) {
-        for (l in limiters) {
-            l.ceilingDb = ceilingDb
-            l.releaseMs = releaseMs
-            l.recomputeCoeffs()
-        }
+        limiter.ceilingDb = ceilingDb
+        limiter.releaseMs = releaseMs
+        limiter.recomputeCoeffs()
     }
 
     // Returns L channel filter instance for the given band (for magnitude evaluation)
@@ -345,22 +366,27 @@ class MasteringChain(private val sampleRate: Int = 48000) {
     }
 
     /** Create an independent copy with matching parameters — safe for concurrent export. */
+    @Synchronized
     fun copyWithCurrentParams(): MasteringChain {
         val copy = MasteringChain(sampleRate)
         for (band in 0..2) copy.updateEq(band, eqFreqs[band], eqGains[band])
         copy.updateCompressor(
-            compressors[0].thresholdDb, compressors[0].ratio,
-            compressors[0].attackMs, compressors[0].releaseMs, compressors[0].makeupGainDb
+            compressor.thresholdDb, compressor.ratio,
+            compressor.attackMs, compressor.releaseMs, compressor.makeupGainDb
         )
-        copy.updateLimiter(limiters[0].ceilingDb, limiters[0].releaseMs)
+        copy.updateLimiter(limiter.ceilingDb, limiter.releaseMs)
+        copy.updateNormalization(inputGainDb, outputGainDb)
         return copy
     }
 }
 
 // MasteringPlayer — AudioTrack streaming playback through MasteringChain
 
-class MasteringPlayer {
-    val chain = MasteringChain()
+class MasteringPlayer internal constructor(private val outputFactory: (Int) -> MasteringOutput) {
+    constructor() : this(::AndroidMasteringOutput)
+    var chain = MasteringChain()
+        private set
+    fun setProcessing(processing: MasteringChain) { stop(); chain = processing }
 
     private val _leftPeakDb = MutableStateFlow(-96f)
     val leftPeakDb: StateFlow<Float> = _leftPeakDb.asStateFlow()
@@ -377,6 +403,8 @@ class MasteringPlayer {
     private val _playbackPosition = MutableStateFlow(0f)
     val playbackPosition: StateFlow<Float> = _playbackPosition.asStateFlow()
 
+    private val _playbackError = MutableStateFlow<String?>(null)
+    val playbackError = _playbackError.asStateFlow()
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -391,8 +419,9 @@ class MasteringPlayer {
 
     private var wavHeader: WavHeader? = null
     private var wavFile: File? = null
-    private var audioTrack: AudioTrack? = null
+    private var audioTrack: MasteringOutput? = null
     private var playbackJob: Job? = null
+    @Volatile private var playbackGeneration = 0L
 
     // Single-writer (seekTo from UI thread), single-reader (playbackLoop on Default dispatcher)
     @Volatile
@@ -402,9 +431,8 @@ class MasteringPlayer {
         stop()
         val file = File(wavPath)
         require(file.exists()) { "WAV file not found: $wavPath" }
-        val header = readWavHeader(file)
-        require(header.channels == 2) { "Expected stereo WAV, got ${header.channels} channels" }
-        require(header.bitsPerSample == 16) { "Expected 16-bit WAV, got ${header.bitsPerSample}-bit" }
+        val header = masteringHeader(file)
+        chain = MasteringChain(header.sampleRate)
         wavHeader = header
         wavFile = file
         _playbackPosition.value = 0f
@@ -415,56 +443,44 @@ class MasteringPlayer {
         val file = wavFile ?: return
         if (_isPlaying.value) return
 
+        val generation = ++playbackGeneration
+        _playbackError.value = null
+        val processing = chain.copyWithCurrentParams()
         _isPlaying.value = true
 
         playbackJob = scope.launch(Dispatchers.Default) {
-            val bufferSize = AudioTrack.getMinBufferSize(
-                header.sampleRate,
-                AudioFormat.CHANNEL_OUT_STEREO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(CHUNK_FRAMES * header.channels * 2)
-
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(header.sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufferSize)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-
-            audioTrack = track
-            track.play()
-
+            var track: MasteringOutput? = null
             try {
+                val output = outputFactory(header.sampleRate)
+                track = output
+                currentCoroutineContext().ensureActive()
+                if (generation != playbackGeneration) return@launch
+                audioTrack = output
+                output.play()
                 withContext(Dispatchers.IO) {
                     RandomAccessFile(file, "r").use { raf ->
-                        playbackLoop(raf, track, header)
+                        playbackLoop(raf, output, header, processing, generation)
                     }
                 }
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (_: Exception) {
+                if (generation == playbackGeneration) _playbackError.value = "Audio preview stopped. Try playing again."
             } finally {
-                _isPlaying.value = false
-                // AudioTrack cleanup handled by stop() — avoid double-stop race
+                try { track?.stop() } catch (_: IllegalStateException) { }
+                track?.release()
+                if (generation == playbackGeneration) {
+                    _isPlaying.value = false
+                    audioTrack = null
+                }
             }
         }
     }
 
     fun stop() {
+        playbackGeneration++
         playbackJob?.cancel()
         playbackJob = null
-        audioTrack?.let {
-            try { it.stop() } catch (_: IllegalStateException) {}
-            it.release()
-        }
+        audioTrack?.let { track -> try { track.pause(); track.flush() } catch (_: IllegalStateException) { } }
         audioTrack = null
         _isPlaying.value = false
     }
@@ -484,23 +500,29 @@ class MasteringPlayer {
         wavFile = null
     }
 
-    private fun playbackLoop(raf: RandomAccessFile, track: AudioTrack, header: WavHeader) {
+    private suspend fun playbackLoop(raf: RandomAccessFile, track: MasteringOutput, header: WavHeader, processing: MasteringChain, generation: Long) {
         val bytesPerFrame = header.channels * (header.bitsPerSample / 8)
         val totalFrames = header.dataSize / bytesPerFrame
         val readBytes = ByteArray(CHUNK_FRAMES * bytesPerFrame)
         val readBuf = ByteBuffer.wrap(readBytes).order(ByteOrder.LITTLE_ENDIAN)
         val outputShorts = ShortArray(CHUNK_FRAMES * header.channels)
 
+        var activeProcessing = processing
         var frameOffset = 0L
         raf.seek(header.dataOffset)
 
-        while (_isPlaying.value) {
+        while (generation == playbackGeneration) {
+            currentCoroutineContext().ensureActive()
             // Handle pending seek
             val pending = seekFraction
             if (pending >= 0f) {
                 seekFraction = -1f
+                track.pause()
+                track.flush()
+                activeProcessing = processing.copyWithCurrentParams()
                 frameOffset = (pending * totalFrames).toLong()
                 raf.seek(header.dataOffset + frameOffset * bytesPerFrame)
+                track.play()
             }
 
             // Read chunk from WAV
@@ -522,7 +544,9 @@ class MasteringPlayer {
                 val leftIn = readBuf.getShort() / 32768f
                 val rightIn = readBuf.getShort() / 32768f
 
-                val (leftOut, rightOut) = chain.processFrame(leftIn, rightIn)
+                activeProcessing.process(leftIn, rightIn)
+                val leftOut = activeProcessing.outputLeft
+                val rightOut = activeProcessing.outputRight
 
                 // Clip detection (latching)
                 if (abs(leftOut) >= 1f) _leftClip.value = true
@@ -540,12 +564,12 @@ class MasteringPlayer {
             // Update meters
             _leftPeakDb.value = linearToDb(peakL)
             _rightPeakDb.value = linearToDb(peakR)
-            _compressorGrDb.value = chain.compressorGrDb
-            _limiterGrDb.value = chain.limiterGrDb
-            _limiterActive.value = chain.limiterActive
+            _compressorGrDb.value = activeProcessing.compressorGrDb
+            _limiterGrDb.value = activeProcessing.limiterGrDb
+            _limiterActive.value = activeProcessing.limiterActive
 
             // Write to AudioTrack (blocking)
-            track.write(outputShorts, 0, framesRead * header.channels)
+            track.write(outputShorts, framesRead * header.channels)
 
             frameOffset += framesRead
             _playbackPosition.value = (frameOffset.toFloat() / totalFrames).coerceIn(0f, 1f)
@@ -559,74 +583,51 @@ class MasteringPlayer {
 
 // Export — Process source WAV through chain, write new WAV
 
+suspend fun exportMaster(wavPath: String, chain: MasteringChain, onProgress: (Float) -> Unit): String =
+    exportMaster(wavPath, chain, null, onProgress)
+
 suspend fun exportMaster(
-    wavPath: String,
-    chain: MasteringChain,
-    onProgress: (Float) -> Unit
-): String = withContext(Dispatchers.IO) {
-    val srcFile = File(wavPath)
-    require(srcFile.exists()) { "Source WAV not found: $wavPath" }
-    val header = readWavHeader(srcFile)
-    require(header.channels == 2) { "Expected stereo WAV, got ${header.channels} channels" }
-    require(header.bitsPerSample == 16) { "Expected 16-bit WAV, got ${header.bitsPerSample}-bit" }
-
-    val outFile = generateOutputFile(srcFile)
-    val bytesPerFrame = header.channels * (header.bitsPerSample / 8)
-    val totalFrames = header.dataSize / bytesPerFrame
-    val chunkFrames = 8192
-    val readBytes = ByteArray(chunkFrames * bytesPerFrame)
-    val readBuf = ByteBuffer.wrap(readBytes).order(ByteOrder.LITTLE_ENDIAN)
-
-    RandomAccessFile(srcFile, "r").use { raf ->
-        RandomAccessFile(outFile, "rw").use { wavOut ->
-            // Write placeholder WAV header
-            wavOut.write(ByteArray(44))
-
-            raf.seek(header.dataOffset)
-            var framesProcessed = 0L
-            var totalDataBytes = 0L
-
-            val outputBuf = ByteBuffer.allocate(chunkFrames * bytesPerFrame)
-                .order(ByteOrder.LITTLE_ENDIAN)
-
-            while (framesProcessed < totalFrames) {
-                val framesToRead = chunkFrames.toLong()
-                    .coerceAtMost(totalFrames - framesProcessed).toInt()
-                val bytesToRead = framesToRead * bytesPerFrame
-                val bytesRead = raf.read(readBytes, 0, bytesToRead)
-                if (bytesRead <= 0) break
-
-                val framesRead = bytesRead / bytesPerFrame
-                readBuf.clear().limit(bytesRead)
-                outputBuf.clear()
-
-                for (i in 0 until framesRead) {
-                    val leftIn = readBuf.getShort() / 32768f
-                    val rightIn = readBuf.getShort() / 32768f
-
-                    val (leftOut, rightOut) = chain.processFrame(leftIn, rightIn)
-
-                    outputBuf.putShort((leftOut.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
-                    outputBuf.putShort((rightOut.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+    wavPath: String, chain: MasteringChain, expectedIdentity: String?, onProgress: (Float) -> Unit,
+): String {
+    var published: File? = null
+    try {
+        return withContext(Dispatchers.IO) {
+            val source = File(wavPath)
+            val identity = recordingFileIdentity(source)
+            check(expectedIdentity == null || identity == expectedIdentity) { "Recording changed. Reopen it before exporting." }
+            val header = masteringHeader(source)
+            val temporary = File.createTempFile(".pyano-master-", ".part", source.parentFile)
+            try {
+                RandomAccessFile(temporary, "rw").use { output ->
+                    output.write(ByteArray(44))
+                    val bytes = ByteBuffer.allocate(8192 * 4).order(ByteOrder.LITTLE_ENDIAN)
+                    fun flush() { output.write(bytes.array(), 0, bytes.position()); bytes.clear() }
+                    streamMastering(source, chain.copyWithCurrentParams(), onProgress) { left, right ->
+                        bytes.putShort((left.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                        bytes.putShort((right.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                        if (!bytes.hasRemaining()) flush()
+                    }
+                    flush()
+                    writeExportWavHeader(output, header.sampleRate, header.channels, header.dataSize)
+                    output.fd.sync()
                 }
-
-                outputBuf.flip()
-                val outBytes = ByteArray(outputBuf.remaining())
-                outputBuf.get(outBytes)
-                wavOut.write(outBytes)
-                totalDataBytes += outBytes.size
-
-                framesProcessed += framesRead
-                onProgress((framesProcessed.toFloat() / totalFrames).coerceIn(0f, 1f))
-            }
-
-            // Write final WAV header
-            writeExportWavHeader(wavOut, header.sampleRate, header.channels, totalDataBytes)
+                currentCoroutineContext().ensureActive()
+                check(recordingFileIdentity(source) == identity) { "Recording changed during export. Reopen it and try again." }
+                synchronized(MASTER_EXPORT_LOCK) {
+                    val destination = generateOutputFile(source)
+                    java.nio.file.Files.move(temporary.toPath(), destination.toPath())
+                    published = destination
+                }
+                currentCoroutineContext().ensureActive()
+                checkNotNull(published).absolutePath
+            } finally { temporary.delete() }
         }
+    } catch (error: Exception) {
+        published?.delete()
+        throw error
     }
-
-    outFile.absolutePath
 }
+private val MASTER_EXPORT_LOCK = Any()
 
 private fun generateOutputFile(srcFile: File): File {
     val dir = srcFile.parentFile ?: srcFile

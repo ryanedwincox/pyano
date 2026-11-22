@@ -6,6 +6,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import kotlin.math.log10
 import kotlin.math.roundToInt
@@ -25,7 +27,8 @@ fun LabeledSlider(
     range: ClosedFloatingPointRange<Float>,
     format: String = "%.1f",
     onValueChange: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -38,9 +41,10 @@ fun LabeledSlider(
         )
         Slider(
             value = value,
+            enabled = enabled,
             onValueChange = onValueChange,
             valueRange = range,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f).semantics { contentDescription = label }
         )
         Text(
             text = String.format(format, value),
