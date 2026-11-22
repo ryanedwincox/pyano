@@ -15,6 +15,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.toPixelMap
+import com.pyano.ui.ScoreNightLight
+import com.pyano.ui.rememberScoreNightLight
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.pyano.scores.*
@@ -173,6 +176,43 @@ class ScoreViewerAndroidTest {
             compose.onNodeWithContentDescription("Back to scores").assertDoesNotExist()
         } finally { viewer.shutdown(); scope.cancel(); root.deleteRecursively() }
     }
+    @Test fun nightLightDefaultsWarmCyclesLevelsAndRemembersChoiceWithoutChangingPdfPixels() {
+        val preferences = compose.activity.getSharedPreferences("score-reading", android.content.Context.MODE_PRIVATE)
+        val previous = preferences.getString("night-light", null)
+        preferences.edit().remove("night-light").commit()
+        val bitmap = Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.WHITE) }
+        val frame = BitmapPageFrame(bitmap)
+        val generation = mutableStateOf(0)
+        val active = mutableStateOf(true)
+        try {
+            compose.setContent { MaterialTheme { if (active.value) androidx.compose.runtime.key(generation.value) {
+                val (selected, cycleNightLight) = rememberScoreNightLight()
+                ScoreViewerContent(ScoreViewerState(pageCount = 1, frame = frame), {}, {}, { _, _, _ -> }, {},
+                    nightLight = selected, onNightLight = { cycleNightLight(); generation.value++ })
+            } } }
+            fun pixel(): androidx.compose.ui.graphics.Color {
+                val pixels = compose.onNodeWithContentDescription("PDF page 1").captureToImage().toPixelMap()
+                return pixels[pixels.width / 2, pixels.height / 2]
+            }
+            compose.onNodeWithContentDescription("Night light: Gentle. Switch to Dim").assertIsDisplayed()
+            val gentle = pixel()
+            assertTrue(gentle.red < .85f && gentle.red > gentle.green && gentle.green > gentle.blue)
+            compose.onNodeWithContentDescription("Night light: Gentle. Switch to Dim").performClick()
+            val dim = pixel()
+            assertTrue(dim.red < gentle.red && dim.green < gentle.green && dim.blue < gentle.blue)
+            assertEquals(ScoreNightLight.DIM.name, preferences.getString("night-light", null))
+            compose.onNodeWithContentDescription("Night light: Dim. Switch to Off").performClick()
+            assertTrue(pixel().red > .98f)
+            compose.onNodeWithContentDescription("Night light: Off. Switch to Gentle").performClick()
+            compose.onNodeWithContentDescription("Night light: Gentle. Switch to Dim").assertIsDisplayed()
+            assertEquals(android.graphics.Color.WHITE, bitmap.getPixel(10, 15))
+        } finally {
+            compose.runOnIdle { active.value = false }
+            compose.waitForIdle()
+            preferences.edit().apply { if (previous == null) remove("night-light") else putString("night-light", previous) }.commit()
+        }
+    }
+
     @Test fun pageSlidesInBothDirectionsAndClearsImmediatelyWhenReleased() {
         val first = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))
         val second = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))

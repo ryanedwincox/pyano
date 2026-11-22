@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
@@ -49,6 +50,7 @@ private data class PresentedPage(val page: Int, val bitmap: Bitmap)
 @Composable
 fun ScoreViewerScreen(controller: ScoreViewerController, recording: Boolean = false, recordEnabled: Boolean = true, countdown: Int = 0, onRecord: (() -> Unit)? = null) {
     val state by controller.state.collectAsState()
+    val (nightLight, cycleNightLight) = rememberScoreNightLight()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val context = LocalContext.current.applicationContext
     BackHandler { controller.close() }
@@ -66,7 +68,7 @@ fun ScoreViewerScreen(controller: ScoreViewerController, recording: Boolean = fa
         lifecycle.addObserver(observer); context.registerComponentCallbacks(memory)
         onDispose { lifecycle.removeObserver(observer); context.unregisterComponentCallbacks(memory); controller.unregisterHost(host) }
     }
-    ScoreViewerContent(state, controller::close, controller::page, controller::transform, controller::retry, recording, recordEnabled, countdown, onRecord)
+    ScoreViewerContent(state, controller::close, controller::page, controller::transform, controller::retry, recording, recordEnabled, countdown, onRecord, nightLight, cycleNightLight)
 }
 
 @Composable
@@ -80,6 +82,8 @@ fun ScoreViewerContent(
     recordEnabled: Boolean = true,
     countdown: Int = 0,
     onRecord: (() -> Unit)? = null,
+    nightLight: ScoreNightLight = ScoreNightLight.GENTLE,
+    onNightLight: () -> Unit = {},
 ) {
     val reading = state.reading
     val latestReading by rememberUpdatedState(reading)
@@ -102,6 +106,12 @@ fun ScoreViewerContent(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to scores") }
                 Text(state.source?.score?.title.orEmpty(), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onNightLight, modifier = Modifier.semantics {
+                    contentDescription = "Night light: ${nightLight.label}. Switch to ${nightLight.next().label}"
+                }) {
+                    Icon(Icons.Default.NightsStay, contentDescription = null)
+                    Text(nightLight.badge)
+                }
                 if (onRecord != null) {
                     if (countdown > 0) RecordingCountdownDisplay(countdown, Modifier.size(48.dp))
                     else FilledIconButton(onClick = onRecord, enabled = recordEnabled,
@@ -187,6 +197,7 @@ fun ScoreViewerContent(
                         val pageOverflowX = max(0f, (pageFit * page.bitmap.width * pageZoom - viewport.width) / 2)
                         val pageOverflowY = max(0f, (pageFit * page.bitmap.height * pageZoom - viewport.height) / 2)
                         Image(page.bitmap.asImageBitmap(), contentDescription = "PDF page ${page.page + 1}",
+                            colorFilter = nightLight.filter,
                             modifier = Modifier.fillMaxSize().graphicsLayer {
                                 scaleX = pageZoom; scaleY = pageZoom
                                 translationX = if (currentPage) reading.panX * pageOverflowX else 0f
