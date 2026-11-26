@@ -8,6 +8,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import android.graphics.Bitmap
+import com.pyano.markup.*
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -85,6 +87,12 @@ fun ScoreViewerContent(
     nightLight: ScoreNightLight = ScoreNightLight.GENTLE,
     onNightLight: () -> Unit = {},
 ) {
+    val markup = state.source?.markup
+    val ink = markup?.state?.collectAsState()?.value ?: InkPage()
+    var pen by remember(state.source?.score?.sha256) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var exportMessage by remember(state.source?.score?.sha256) { mutableStateOf<String?>(null) }
+    LaunchedEffect(markup, state.reading.page) { markup?.watch(state.reading.page) }
     val reading = state.reading
     val latestReading by rememberUpdatedState(reading)
     val latestState by rememberUpdatedState(state)
@@ -134,6 +142,24 @@ fun ScoreViewerContent(
                 }
                 TextButton(onClick = { onTransform(1f, 0f, 0f) }, enabled = state.pageCount > 0) { Text("Reset zoom") }
             }
+            if (markup != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = pen, enabled = ink.loaded && !ink.saving && !ink.exporting,
+                        onClick = { pen = !pen }, label = { Text("Pen") })
+                    TextButton(onClick = markup::undo, enabled = ink.loaded && !ink.saving && !ink.exporting && ink.strokes.any { !it.deleted }) { Text("Undo") }
+                    TextButton(onClick = {
+                        scope.launch {
+                            try { exportMessage = markup.export() }
+                            catch (error: kotlinx.coroutines.CancellationException) { throw error }
+                            catch (error: Exception) { exportMessage = error.message ?: "Could not export marked PDF" }
+                        }
+                    }, enabled = ink.loaded && !ink.saving && !ink.exporting) { Text(if (ink.exporting) "Exporting…" else "Export marked PDF") }
+                    if (ink.error) TextButton(onClick = markup::retry) { Text("Retry") }
+                }
+                if (pen) Text("Pen on · Turn off to zoom or swipe.", style = MaterialTheme.typography.bodySmall)
+                Text(ink.message, style = MaterialTheme.typography.bodySmall)
+                exportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
             state.message?.let { message ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -142,7 +168,8 @@ fun ScoreViewerContent(
             }
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             Box(Modifier.testTag("pdf-viewport").fillMaxWidth().weight(1f).clipToBounds().onSizeChanged { viewport = it }
-                .pointerInput(state.session, viewport) {
+                .pointerInput(state.session, viewport, pen) {
+                    if (pen) return@pointerInput
                     val threshold = 64.dp.toPx()
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -165,7 +192,8 @@ fun ScoreViewerContent(
                         }
                     }
                 }
-                .pointerInput(state.session, viewport, frame?.width, frame?.height) {
+                .pointerInput(state.session, viewport, frame?.width, frame?.height, pen) {
+                    if (pen) return@pointerInput
                     detectTransformGestures { _, pan, zoom, _ ->
                         val current = latestReading
                         val currentX = max(0f, (fit * (frame?.width ?: 0) * current.zoom - viewport.width) / 2)
@@ -196,6 +224,7 @@ fun ScoreViewerContent(
                             min(viewport.width.toFloat() / page.bitmap.width, viewport.height.toFloat() / page.bitmap.height)
                         val pageOverflowX = max(0f, (pageFit * page.bitmap.width * pageZoom - viewport.width) / 2)
                         val pageOverflowY = max(0f, (pageFit * page.bitmap.height * pageZoom - viewport.height) / 2)
+                        Box(Modifier.fillMaxSize()) {
                         Image(page.bitmap.asImageBitmap(), contentDescription = "PDF page ${page.page + 1}",
                             colorFilter = nightLight.filter,
                             modifier = Modifier.fillMaxSize().graphicsLayer {
@@ -203,6 +232,13 @@ fun ScoreViewerContent(
                                 translationX = if (currentPage) reading.panX * pageOverflowX else 0f
                                 translationY = if (currentPage) reading.panY * pageOverflowY else 0f
                             })
+                        if (markup != null && currentPage && ink.page == page.page) ScoreInkCanvas(
+                            ink.strokes, pen && ink.loaded && !ink.saving && !ink.exporting && canNavigate,
+                            page.bitmap.width * pageFit, page.bitmap.height * pageFit, pageZoom,
+                            reading.panX * pageOverflowX, reading.panY * pageOverflowY,
+                            Modifier.fillMaxSize().testTag("score-pen-canvas"),
+                        ) { points -> markup.add(page.page, points) }
+                        }
                     }
                 }
             }

@@ -11,6 +11,7 @@ class ScoreLibraryController(
     private val scope: CoroutineScope,
     private val client: CloudScoreClient = CloudScoreClient(),
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val context: android.content.Context? = null,
     private val cacheFactory: (File, ScoreProfile) -> ScoreCache = { directory, selected -> ScoreCache(directory, selected) },
 ) {
     private val mutableState = MutableStateFlow(ScoreLibraryState())
@@ -33,7 +34,8 @@ class ScoreLibraryController(
     fun viewerSource(score: Score): com.pyano.viewer.ViewerSource? {
         val selected = profile ?: return null
         val target = cache ?: return null
-        return com.pyano.viewer.ViewerSource(selected.namespace, score) {
+        val ink = context?.let { com.pyano.markup.ScoreInkSession(it, selected, score, scope) { action -> target.openReadLease(score, action) } }
+        return com.pyano.viewer.ViewerSource(selected.namespace, score, ink) {
             target.openReadLease(score) { file ->
                 com.pyano.viewer.AndroidPdfDocumentSession.open(android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY))
             }

@@ -131,7 +131,7 @@ class MainActivity : ComponentActivity() {
                 manageStorageLauncher.launch(intent)
             }
         } else {
-            val permission = Manifest.permission.READ_EXTERNAL_STORAGE
+            val permission = if (Build.VERSION.SDK_INT <= 28) Manifest.permission.WRITE_EXTERNAL_STORAGE else Manifest.permission.READ_EXTERNAL_STORAGE
             if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
                 permissionLauncher.launch(permission)
             }

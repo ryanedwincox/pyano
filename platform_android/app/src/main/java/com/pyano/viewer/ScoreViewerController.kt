@@ -8,7 +8,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicLong
 
-class ViewerSource(val namespace: String, val score: Score, val open: suspend () -> PdfDocumentSession)
+class ViewerSource(val namespace: String, val score: Score, val markup: com.pyano.markup.ScoreInkSession?, val open: suspend () -> PdfDocumentSession) {
+    constructor(namespace: String, score: Score, open: suspend () -> PdfDocumentSession) : this(namespace, score, null, open)
+}
 data class ScoreViewerState(
     val source: ViewerSource? = null,
     val reading: ReadingState = ReadingState(),

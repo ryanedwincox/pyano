@@ -294,7 +294,7 @@ class PyanoViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope, com.pyano.viewer.ReadingStateStore(java.io.File(application.noBackupFilesDir, "score-reading"))
     )
     fun openScore(score: com.pyano.scores.Score) { scoreLibrary.viewerSource(score)?.let(scoreViewer::open) }
-    val scoreLibrary = ScoreLibraryController(scoreCacheRoot(application.noBackupFilesDir), viewModelScope)
+    val scoreLibrary = ScoreLibraryController(scoreCacheRoot(application.noBackupFilesDir), viewModelScope, context = application)
     private var scoreSelectionGeneration = 0
 
     private fun updateScoreProfile() {
