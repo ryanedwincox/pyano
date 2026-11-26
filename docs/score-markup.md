@@ -4,7 +4,7 @@
 Open a downloaded score and turn **Pen** on. Draw with a finger or stylus.
 Turn Pen off to zoom, pan, or swipe between pages; the page navigation buttons
 remain available. **Undo** removes the most recently stored visible stroke on
-the current page. Marks are blue and follow the PDF when zooming or panning.
+the current page. Marks are black and follow the PDF when zooming or panning.
 
 Completed strokes save automatically on the tablet, including offline. The Cloud
 icon shows save/sync status. Tap it for details and **Retry** after

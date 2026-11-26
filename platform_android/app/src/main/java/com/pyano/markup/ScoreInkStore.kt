@@ -9,7 +9,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 const val INK_WIDTH = .0035f
-const val INK_COLOR = 0xff245fbe.toInt()
+const val INK_COLOR = 0xff000000.toInt()
 data class InkStroke(val id: String, val points: List<List<Float>>, val deleted: Boolean = false, val pending: Boolean = true)
 internal val inkId = Regex("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
 internal fun decodeInk(value: JsonObject, pending: Boolean): InkStroke {

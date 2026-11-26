@@ -139,7 +139,7 @@ class ScoreInkAndroidTest {
                     try {
                         bitmap.eraseColor(Color.WHITE); page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                         val pixel = bitmap.getPixel(200, 300)
-                        if (index == 0) assertEquals(Color.WHITE, pixel) else assertTrue(Color.blue(pixel) > Color.red(pixel))
+                        if (index == 0) assertEquals(Color.WHITE, pixel) else assertEquals(Color.BLACK, pixel)
                     } finally { page.close(); bitmap.recycle() }
                 }
             } finally { renderer.close() }
