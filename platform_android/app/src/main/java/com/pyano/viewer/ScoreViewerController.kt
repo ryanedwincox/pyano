@@ -84,8 +84,6 @@ class ScoreViewerController(
                     if (request.id != sequence.get() || !currentCoroutineContext().isActive) {
                         replacement?.discard(); currentCoroutineContext().ensureActive(); continue
                     }
-                    save(source, reading)?.let { message = it }
-                    pendingWrites.remove(source.namespace + source.score.identity, source to reading)
                     val published = synchronized(this@ScoreViewerController) {
                         if (request.id != sequence.get() || !workerContext.isActive || mutableState.value.session != request.state.session) false
                         else {
@@ -95,7 +93,12 @@ class ScoreViewerController(
                             true
                         }
                     }
-                    if (!published) replacement?.discard() else renderedPage = reading.page
+                    if (!published) replacement?.discard() else {
+                        renderedPage = reading.page
+                        save(source, reading)?.let { positionWarning(request, it) }
+                        pendingWrites.remove(source.namespace + source.score.identity, source to reading)
+                        document.prefetch(reading.page) { request.id == sequence.get() && workerContext.isActive }
+                    }
                 } catch (canceled: CancellationException) { throw canceled }
                 catch (_: OutOfMemoryError) {
                     try { document?.close() } catch (_: Exception) { }
@@ -112,6 +115,12 @@ class ScoreViewerController(
 
     @Synchronized private fun warning(source: ViewerSource, message: String) {
         if (mutableState.value.source === source) mutableState.value = mutableState.value.copy(message = message)
+    }
+    @Synchronized private fun positionWarning(request: Request, message: String) {
+        if (request.id == sequence.get() && request.resourceEpoch == resourceEpoch &&
+            mutableState.value.session == request.state.session && mutableState.value.frame != null) {
+            mutableState.value = mutableState.value.copy(message = message)
+        }
     }
     @Synchronized private fun failure(request: Request, message: String) {
         if (mutableState.value.session == request.state.session && request.id == sequence.get()) {
@@ -141,13 +150,16 @@ class ScoreViewerController(
         val current = mutableState.value
         if (current.pageCount <= 0) return
         val next = (current.reading.page.toLong() + delta).coerceIn(0, (current.pageCount - 1).toLong()).toInt()
+        if (next == current.reading.page) return
         mutableState.value = current.copy(reading = current.reading.copy(page = next, panX = 0f, panY = 0f), frame = null, loading = true)
         rememberPosition(); enqueue()
     }
     @Synchronized fun transform(zoom: Float, panX: Float, panY: Float) {
         val current = mutableState.value
         if (current.pageCount <= 0) return
-        mutableState.value = current.copy(reading = current.reading.copy(zoom = zoom, panX = panX, panY = panY).bounded(current.pageCount))
+        val reading = current.reading.copy(zoom = zoom, panX = panX, panY = panY).bounded(current.pageCount)
+        if (reading == current.reading) return
+        mutableState.value = current.copy(reading = reading)
         rememberPosition(); enqueue()
     }
     @Synchronized fun registerHost(active: Boolean): Any = Any().also { hosts[it] = active; foreground(hosts.values.any { visible -> visible }) }

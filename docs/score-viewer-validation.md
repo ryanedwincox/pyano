@@ -14,7 +14,11 @@ The most recent sixteen versions are retained per score. Failed position saves
 show guidance while leaving the reader usable and prior saved state intact.
 
 Page rendering uses one serial worker with one renderer and one page open at a
-time. Each ARGB bitmap is limited to 2,000,000 pixels and dimensions at most 4096.
+time. Clear horizontal swipes turn at 32 dp while the finger is still down, once
+per gesture, with a 100 ms slide that does not block another turn. Zoomed views
+keep gestures for panning. The next and previous pages are preloaded after the
+current page is visible; at most two unpublished neighbor frames are cached.
+Page turns publish before saving the new reading position; reopening first flushes pending writes. Each ARGB bitmap is limited to 2,000,000 pixels and dimensions at most 4096.
 Zoom uses the existing bitmap. Old UI frames are released through ordinary bitmap
 ownership rather than recycling memory still visible to Compose. Unpublished
 stale frames are recycled. When the last visible reader window stops, frames drop

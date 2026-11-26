@@ -218,6 +218,29 @@ class ScoreViewerAndroidTest {
         }
     }
 
+    @Test fun shortSwipeTurnsBeforeFingerLiftsAndOnlyOncePerGesture() {
+        val frame = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))
+        val state = mutableStateOf(ScoreViewerState(pageCount = 3, frame = frame, session = 1))
+        val density = compose.activity.resources.displayMetrics.density
+        compose.setContent { MaterialTheme { ScoreViewerContent(state.value, {}, { delta ->
+            state.value = state.value.copy(reading = ReadingState(page = state.value.reading.page + delta))
+        }, { _, _, _ -> }, {}) } }
+        val viewport = compose.onNodeWithTag("pdf-viewport")
+        viewport.performTouchInput { down(center); moveBy(Offset(-12f * density, 0f)); up() }
+        compose.runOnIdle { assertEquals(0, state.value.reading.page) }
+        viewport.performTouchInput { down(center); moveBy(Offset(-40f * density, 0f)) }
+        compose.runOnIdle { assertEquals(1, state.value.reading.page) }
+        viewport.performTouchInput { moveBy(Offset(-80f * density, 0f)); up() }
+        compose.runOnIdle { assertEquals(1, state.value.reading.page) }
+        viewport.performTouchInput { down(center); moveBy(Offset(-40f * density, 0f)); up() }
+        compose.runOnIdle { assertEquals(2, state.value.reading.page) }
+        viewport.performTouchInput { swipeLeft() }
+        compose.runOnIdle { assertEquals(2, state.value.reading.page) }
+        viewport.performTouchInput { down(center); moveBy(Offset(40f * density, 0f)) }
+        compose.runOnIdle { assertEquals(1, state.value.reading.page) }
+        viewport.performTouchInput { up() }
+    }
+
     @Test fun pageSlidesInBothDirectionsAndClearsImmediatelyWhenReleased() {
         val first = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))
         val second = BitmapPageFrame(Bitmap.createBitmap(20, 30, Bitmap.Config.ARGB_8888))
@@ -226,15 +249,15 @@ class ScoreViewerAndroidTest {
         compose.onNodeWithContentDescription("Back to scores").assertIsDisplayed()
         compose.mainClock.autoAdvance = false
         compose.runOnIdle { state.value = state.value.copy(reading = ReadingState(page = 1), frame = second) }
-        compose.mainClock.advanceTimeBy(100)
+        compose.mainClock.advanceTimeBy(50)
         val oldForward = compose.onNodeWithContentDescription("PDF page 1").getUnclippedBoundsInRoot().left.value
         val newForward = compose.onNodeWithContentDescription("PDF page 2").getUnclippedBoundsInRoot().left.value
         assertTrue(oldForward < newForward)
-        compose.onNodeWithText("Next").assertIsNotEnabled()
+        compose.onNodeWithText("Next").assertIsEnabled()
         compose.mainClock.advanceTimeBy(400)
         compose.onNodeWithContentDescription("PDF page 1").assertDoesNotExist()
         compose.runOnIdle { state.value = state.value.copy(reading = ReadingState(), frame = first) }
-        compose.mainClock.advanceTimeBy(100)
+        compose.mainClock.advanceTimeBy(50)
         val oldBackward = compose.onNodeWithContentDescription("PDF page 2").getUnclippedBoundsInRoot().left.value
         val newBackward = compose.onNodeWithContentDescription("PDF page 1").getUnclippedBoundsInRoot().left.value
         assertTrue(newBackward < oldBackward)

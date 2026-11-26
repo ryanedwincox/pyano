@@ -107,7 +107,7 @@ fun ScoreViewerContent(
         else if (state.loading && retainedPage?.page != reading.page) retainedPage else null
     SideEffect { retainedPage = presentedPage }
     val transition = key(state.session) { updateTransition(presentedPage, label = "PDF page transition") }
-    val canNavigate = !state.loading && !transition.isRunning
+    val canNavigate = !state.loading
     val latestCanNavigate by rememberUpdatedState(canNavigate)
     val fit = if (frame == null || viewport.width == 0 || viewport.height == 0) 0f
         else min(viewport.width.toFloat() / frame.width, viewport.height.toFloat() / frame.height)
@@ -163,26 +163,30 @@ fun ScoreViewerContent(
             Box(Modifier.testTag("pdf-viewport").fillMaxWidth().weight(1f).clipToBounds().onSizeChanged { viewport = it }
                 .pointerInput(state.session, viewport, pen) {
                     if (pen) return@pointerInput
-                    val threshold = 64.dp.toPx()
+                    val threshold = 32.dp.toPx()
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         val initial = latestState
                         var singlePointer = true
-                        var displacement = androidx.compose.ui.geometry.Offset.Zero
+                        var turned = false
                         do {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (event.changes.any { it.id != down.id }) singlePointer = false
                             val pointer = event.changes.firstOrNull { it.id == down.id }
-                            if (pointer != null) displacement = pointer.position - down.position
+                            val displacement = pointer?.let { it.position - down.position } ?: androidx.compose.ui.geometry.Offset.Zero
+                            val current = latestState
+                            if (!turned && latestCanNavigate && singlePointer && initial.frame != null && current.frame != null &&
+                                !initial.loading && !current.loading && initial.reading.zoom == 1f && current.reading.zoom == 1f &&
+                                initial.session == current.session && initial.reading.page == current.reading.page &&
+                                abs(displacement.x) >= threshold && abs(displacement.x) > abs(displacement.y) * 1.5f) {
+                                val delta = if (displacement.x < 0) 1 else -1
+                                if (current.reading.page + delta in 0 until current.pageCount) {
+                                    turned = true
+                                    latestOnPage(delta)
+                                }
+                            }
+                            if (turned) event.changes.forEach { it.consume() }
                         } while (event.changes.any { it.pressed })
-                        val current = latestState
-                        if (latestCanNavigate && singlePointer && initial.frame != null && current.frame != null && !initial.loading && !current.loading &&
-                            initial.reading.zoom == 1f && current.reading.zoom == 1f &&
-                            initial.session == current.session && initial.reading.page == current.reading.page &&
-                            abs(displacement.x) >= threshold && abs(displacement.x) > abs(displacement.y) * 1.5f) {
-                            val delta = if (displacement.x < 0) 1 else -1
-                            if (current.reading.page + delta in 0 until current.pageCount) latestOnPage(delta)
-                        }
                     }
                 }
                 .pointerInput(state.session, viewport, frame?.width, frame?.height, pen) {
@@ -205,8 +209,8 @@ fun ScoreViewerContent(
                         if (initialState == null || targetState == null) EnterTransition.None togetherWith ExitTransition.None
                         else {
                             val direction = if (targetState!!.page > initialState!!.page) 1 else -1
-                            slideInHorizontally(tween(240)) { it * direction } togetherWith
-                                slideOutHorizontally(tween(240)) { -it * direction }
+                            slideInHorizontally(tween(100)) { it * direction } togetherWith
+                                slideOutHorizontally(tween(100)) { -it * direction }
                         }
                     },
                 ) { page ->

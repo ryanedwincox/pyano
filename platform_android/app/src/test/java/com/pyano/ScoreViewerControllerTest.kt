@@ -105,13 +105,48 @@ class ScoreViewerControllerTest {
             assertTrue(documents.size >= 3)
         } finally { viewer.shutdown(); scope.cancel() }
     }
+    @Test fun readablePageIsPublishedBeforeSlowPositionSaveCompletes() = runBlocking {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReadingStateStore(temp.newFolder()) { from, to ->
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+            java.nio.file.Files.move(from.toPath(), to.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            Unit
+        }
+        val viewer = ScoreViewerController(scope, store)
+        try {
+            viewer.open(ViewerSource(namespace, score) { Document() })
+            assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+            assertNotNull(viewer.state.value.frame)
+            assertFalse(viewer.state.value.loading)
+        } finally { release.countDown(); viewer.shutdown(); scope.cancel() }
+    }
+
+    @Test fun lateSaveFailureDoesNotReplaceMemoryReleaseGuidance() = runBlocking {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val store = ReadingStateStore(temp.newFolder()) { _, _ ->
+            entered.countDown(); check(release.await(5, TimeUnit.SECONDS)); error("full storage fixture")
+        }
+        val viewer = ScoreViewerController(scope, store)
+        val document = Document()
+        try {
+            viewer.open(ViewerSource(namespace, score) { document })
+            assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+            viewer.trimMemory()
+            release.countDown()
+            await { document.closes.get() == 1 }
+            assertNull(viewer.state.value.frame)
+            assertTrue(viewer.state.value.message!!.contains("PDF memory released"))
+        } finally { release.countDown(); viewer.shutdown(); scope.cancel() }
+    }
+
     @Test fun failedPositionSaveLeavesReadableFrameAndActionableWarning() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val viewer = ScoreViewerController(scope, ReadingStateStore(temp.newFolder()) { _, _ -> error("full storage fixture") })
         try {
             viewer.open(ViewerSource(namespace, score) { Document() })
-            await { viewer.state.value.frame != null }
-            assertTrue(viewer.state.value.message!!.contains("save reading position"))
+            await { viewer.state.value.frame != null && viewer.state.value.message?.contains("save reading position") == true }
             viewer.transform(2f, .1f, .2f)
             await { viewer.state.value.reading.zoom == 2f && viewer.state.value.message != null }
             assertNotNull(viewer.state.value.frame)
@@ -187,7 +222,7 @@ class ScoreViewerControllerTest {
         val viewer = ScoreViewerController(scope, store)
         val document = Document()
         try {
-            viewer.open(ViewerSource(namespace, score) { document }); await { viewer.state.value.frame != null }
+            viewer.open(ViewerSource(namespace, score) { document }); await { viewer.state.value.frame != null && writes.get() == 1 }
             writes.set(0)
             viewer.transform(2f, .1f, -.2f)
             await { writes.get() >= 1 }
@@ -259,12 +294,15 @@ class ScoreViewerControllerTest {
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val reject = java.util.concurrent.atomic.AtomicBoolean(false)
         val root = temp.newFolder()
+        val writes = AtomicInteger()
         val store = ReadingStateStore(root) { from, to ->
             check(!reject.get()) { "simulated storage failure" }
             java.nio.file.Files.move(from.toPath(), to.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            writes.incrementAndGet()
             Unit
         }
+        store.save(namespace, score, ReadingState(page = 2))
         val first = Document { page ->
             if (page == 1) { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
             Frame()
@@ -274,14 +312,14 @@ class ScoreViewerControllerTest {
         val viewer = ScoreViewerController(scope, store)
         val source = ViewerSource(namespace, score) { if (opens.getAndIncrement() == 0) first else Document() }
         try {
-            viewer.open(source); await { viewer.state.value.frame != null }
-            reject.set(true); viewer.page(1)
+            viewer.open(source); await { viewer.state.value.frame != null && writes.get() == 2 }
+            reject.set(true); viewer.page(-1)
             assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
             viewer.transform(2f, .2f, -.3f); viewer.close(); viewer.open(source)
             release.countDown()
             await { !viewer.state.value.loading && viewer.state.value.frame != null }
-            assertEquals(0, viewer.state.value.reading.page)
-            assertEquals(ReadingState(), ReadingStateStore(root).load(namespace, score).reading)
+            assertEquals(2, viewer.state.value.reading.page)
+            assertEquals(ReadingState(page = 2), ReadingStateStore(root).load(namespace, score).reading)
             assertTrue(viewer.state.value.message!!.contains("Could not save reading position"))
         } finally { release.countDown(); viewer.shutdown(); scope.cancel() }
     }

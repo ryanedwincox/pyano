@@ -14,6 +14,7 @@ interface PageFrame {
 interface PdfDocumentSession : AutoCloseable {
     val pageCount: Int
     fun render(page: Int): PageFrame
+    fun prefetch(page: Int, shouldContinue: () -> Boolean) {}
 }
 class BitmapPageFrame(val bitmap: Bitmap) : PageFrame {
     override val width get() = bitmap.width
@@ -34,9 +35,9 @@ class AndroidPdfDocumentSession private constructor(private val renderer: PdfRen
     }
     override fun close() = renderer.close()
     companion object {
-        fun open(descriptor: ParcelFileDescriptor): AndroidPdfDocumentSession {
+        fun open(descriptor: ParcelFileDescriptor): PdfDocumentSession {
             val renderer = try { PdfRenderer(descriptor) } catch (failure: Throwable) { descriptor.close(); throw failure }
-            return AndroidPdfDocumentSession(renderer)
+            return AdjacentPageSession(AndroidPdfDocumentSession(renderer))
         }
     }
 }
