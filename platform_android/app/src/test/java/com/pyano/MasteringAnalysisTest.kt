@@ -128,6 +128,35 @@ class MasteringAnalysisTest {
         val broken = directory.newFile("broken.wav").apply { writeBytes(file.readBytes().dropLast(4).toByteArray()) }
         assertThrows(IllegalArgumentException::class.java) { masteringHeader(broken) }
     }
+    @Test fun exportedMidiIsAnExactCopyAndFilenameSelectionReservesBothAssets() = runBlocking<Unit> {
+        val file = tone("Practice.wav", .1f)
+        val midi = RecordingBundleFiles.midi(file)
+        val originalMidi = byteArrayOf(77, 84, 104, 100, 0, 1, 2, 3)
+        midi.writeBytes(originalMidi)
+        val collision = directory.newFile("Practice_final.mid").apply { writeText("Keep existing MIDI") }
+        val chain = MasteringSettings().chain(48000)
+        val output = File(exportMaster(file.path, chain) {})
+        assertEquals("Practice_final1.wav", output.name)
+        assertArrayEquals(originalMidi, RecordingBundleFiles.midi(output).readBytes())
+        assertArrayEquals(originalMidi, midi.readBytes())
+        assertEquals("Keep existing MIDI", collision.readText())
+        assertEquals(readWavHeader(file).dataSize, readWavHeader(output).dataSize)
+        val again = File(exportMaster(output.path, chain) {})
+        assertEquals("Practice_final2.wav", again.name)
+        assertArrayEquals(originalMidi, RecordingBundleFiles.midi(again).readBytes())
+    }
+
+    @Test fun changingMidiDuringExportDoesNotPublishAPartialPair() = runBlocking<Unit> {
+        val file = tone("changed-midi.wav", .1f)
+        val midi = RecordingBundleFiles.midi(file).apply { writeText("original MIDI") }
+        try {
+            exportMaster(file.path, MasteringSettings().chain(48000)) { midi.writeText("changed MIDI") }
+            fail("Changed MIDI accepted")
+        } catch (_: IllegalStateException) { }
+        assertFalse(directory.root.list()!!.any { it.contains("_final") || it.endsWith(".part") })
+        assertTrue(file.exists())
+    }
+
     @Test fun rejectsChangedSourcesAndInvalidSampleRatesBeforeRendering() = runBlocking<Unit> {
         val file = tone("replaced.wav", .2f)
         val plan = analyzeMastering(file, MasteringSettings())
@@ -143,6 +172,7 @@ class MasteringAnalysisTest {
 
     @Test fun cancellationWhileReturningPublishedExportRemovesItsCopy() = runBlocking<Unit> {
         val file = tone("cancel-after-move.wav", .1f)
+        RecordingBundleFiles.midi(file).writeText("captured MIDI")
         val queue = java.util.concurrent.LinkedBlockingQueue<Runnable>()
         val dispatcher = object : CoroutineDispatcher() {
             override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queue.add(block) }
@@ -157,6 +187,8 @@ class MasteringAnalysisTest {
         queue.take().run()
         task.join()
         assertFalse(output.exists())
+        assertFalse(RecordingBundleFiles.midi(output).exists())
+        assertTrue(RecordingBundleFiles.midi(file).exists())
         assertFalse(directory.root.list()!!.any { it.endsWith(".part") })
         assertTrue(file.exists())
     }

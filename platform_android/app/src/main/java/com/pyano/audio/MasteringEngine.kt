@@ -588,16 +588,35 @@ suspend fun exportMaster(wavPath: String, chain: MasteringChain, onProgress: (Fl
 
 suspend fun exportMaster(
     wavPath: String, chain: MasteringChain, expectedIdentity: String?, onProgress: (Float) -> Unit,
+): String = exportMaster(wavPath, chain, expectedIdentity, File(File(wavPath).parentFile, ".pyano-master-publications"), onProgress)
+
+suspend fun exportMaster(
+    wavPath: String, chain: MasteringChain, expectedIdentity: String?, publicationDirectory: File, onProgress: (Float) -> Unit,
 ): String {
     var published: File? = null
+    val publishedFiles = mutableListOf<Pair<File, String>>()
+    var publication: Pair<RecordingTakePublication, File>? = null
     try {
         return withContext(Dispatchers.IO) {
             val source = File(wavPath)
             val identity = recordingFileIdentity(source)
             check(expectedIdentity == null || identity == expectedIdentity) { "Recording changed. Reopen it before exporting." }
             val header = masteringHeader(source)
-            val temporary = File.createTempFile(".pyano-master-", ".part", source.parentFile)
+            val sourceMidi = RecordingBundleFiles.midi(source)
+            val midiIdentity = if (sourceMidi.exists()) recordingFileProof(sourceMidi) else null
+            val temporary = File.createTempFile(".pyano-take-master-", ".part", source.parentFile)
+            val temporaryMidi = try {
+                if (midiIdentity != null) File.createTempFile(".pyano-take-master-midi-", ".part", source.parentFile) else null
+            } catch (error: Exception) { temporary.delete(); throw error }
             try {
+                if (temporaryMidi != null) {
+                    java.io.FileOutputStream(temporaryMidi).use { output ->
+                        sourceMidi.inputStream().use { it.copyTo(output) }; output.fd.sync()
+                    }
+                    check(recordingProofDigest(recordingFileProof(temporaryMidi)) == recordingProofDigest(midiIdentity)) {
+                        "MIDI changed while copying. Reopen the recording and retry."
+                    }
+                }
                 RandomAccessFile(temporary, "rw").use { output ->
                     output.write(ByteArray(44))
                     val bytes = ByteBuffer.allocate(8192 * 4).order(ByteOrder.LITTLE_ENDIAN)
@@ -613,21 +632,35 @@ suspend fun exportMaster(
                 }
                 currentCoroutineContext().ensureActive()
                 check(recordingFileIdentity(source) == identity) { "Recording changed during export. Reopen it and try again." }
-                synchronized(MASTER_EXPORT_LOCK) {
+                check(if (midiIdentity == null) !sourceMidi.exists() else recordingFileProof(sourceMidi) == midiIdentity) {
+                    "MIDI changed during export. Reopen the recording and retry."
+                }
+                synchronized(RecordingBundleFiles) {
                     val destination = generateOutputFile(source)
-                    java.nio.file.Files.move(temporary.toPath(), destination.toPath())
+                    val publisher = RecordingTakePublication(publicationDirectory, checkNotNull(source.parentFile))
+                    val journal = publisher.prepare(temporary, temporaryMidi, destination)
+                    publication = publisher to journal
+                    publishedFiles.add(destination to recordingFileProof(temporary))
+                    temporaryMidi?.let { publishedFiles.add(RecordingBundleFiles.midi(destination) to recordingFileProof(it)) }
+                    publisher.publish(journal)
                     published = destination
                 }
                 currentCoroutineContext().ensureActive()
                 checkNotNull(published).absolutePath
-            } finally { temporary.delete() }
+            } finally {
+                if (publication?.second?.exists() != true) { temporary.delete(); temporaryMidi?.delete() }
+            }
         }
     } catch (error: Exception) {
-        published?.delete()
+        synchronized(RecordingBundleFiles) {
+            publication?.let { (publisher, journal) -> if (journal.exists()) publisher.rollback(journal) }
+            publishedFiles.forEach { (file, proof) ->
+                if (runCatching { recordingFileProof(file) == proof }.getOrDefault(false)) check(file.delete()) { "Could not clean up canceled export" }
+            }
+        }
         throw error
     }
 }
-private val MASTER_EXPORT_LOCK = Any()
 
 private fun generateOutputFile(srcFile: File): File {
     val dir = srcFile.parentFile ?: srcFile
@@ -637,11 +670,11 @@ private fun generateOutputFile(srcFile: File): File {
     val coreName = baseName.replace(Regex("_final\\d*$"), "")
 
     val candidate = File(dir, "${coreName}_final.wav")
-    if (!candidate.exists()) return candidate
+    if (!candidate.exists() && !RecordingBundleFiles.midi(candidate).exists()) return candidate
 
     for (n in 1..999) {
         val numbered = File(dir, "${coreName}_final$n.wav")
-        if (!numbered.exists()) return numbered
+        if (!numbered.exists() && !RecordingBundleFiles.midi(numbered).exists()) return numbered
     }
     throw java.io.IOException("Could not generate unique output filename after 999 attempts")
 }

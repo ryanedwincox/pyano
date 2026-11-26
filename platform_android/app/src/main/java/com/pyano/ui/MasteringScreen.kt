@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -374,6 +375,7 @@ private fun ExportSection(
     onExportDone: (String) -> Unit,
     onExportError: (String) -> Unit
 ) {
+    val context = LocalContext.current.applicationContext
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Export", style = MaterialTheme.typography.titleMedium,
@@ -384,13 +386,10 @@ private fun ExportSection(
                     onExportStart()
                     val exportChain = chain.copyWithCurrentParams()
                     scope.launch {
-                        var outputPath: String? = null
                         try {
-                            val result = exportMaster(recording.path, exportChain, sourceIdentity, onProgress)
-                            outputPath = result
+                            val result = exportMaster(recording.path, exportChain, sourceIdentity, File(context.filesDir, "take-publications"), onProgress)
                             onExportDone(result.substringAfterLast('/'))
                         } catch (e: CancellationException) {
-                            outputPath?.let { File(it).delete() }
                             onExportError("Export cancelled")
                             throw e
                         } catch (e: Exception) {

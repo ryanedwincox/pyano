@@ -7,6 +7,15 @@ compression and a final −1 dBFS sample-peak limiter. Preview and export stay
 unavailable until analysis for the current settings finishes. Originals remain
 unchanged; export creates a new `_final[N].wav` beside the source. Saving a new
 recording opens this dialog immediately, including when recording from a score.
+Exports copy the source `.mid` sidecar byte-for-byte to the matching output name;
+lookahead compensation preserves audio duration, so MIDI timing stays unchanged.
+An occupied WAV or MIDI filename is skipped. Re-mastering a `_final[N]` copy uses
+the next free suffix. Initial Cloud titles match the output filename without
+`.wav`; each different mastered audio/MIDI bundle has its own stable Cloud ID.
+Original uploads are not replaced. For a new bundle, rename the copy before
+uploading to choose a title, or rename it afterward to update its Cloud title.
+Byte-identical re-exports deduplicate to the same Cloud recording; its existing
+title remains unless explicitly renamed.
 Discarding a take or a failed save does not open mastering.
 
 ## Presets and controls
