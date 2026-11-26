@@ -18,7 +18,7 @@ refreshes Cloud changes. Undo actions merge without resurrecting removed marks.
 Removing a local PDF copy does not remove its annotations; deleting a score in
 Cloud removes its Cloud marks, while existing local marks remain on the tablet.
 
-The reader toolbar places the pen and undo icons after the zoom controls.
+The page-navigation row includes the zoom buttons, pen, undo, and sync icons.
 Pen marks remain editable and the original PDF stays unchanged.
 
 Marks are tied to the PDF hash and score ID. A rename retains marks; a different

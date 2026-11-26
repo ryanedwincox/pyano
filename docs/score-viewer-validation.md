@@ -19,7 +19,7 @@ per gesture, with a 100 ms slide that does not block another turn. Zoomed views
 keep gestures for panning. The next and previous pages are preloaded after the
 current page is visible; at most two unpublished neighbor frames are cached.
 Page turns publish before saving the new reading position; reopening first flushes pending writes. Each ARGB bitmap is limited to 2,000,000 pixels and dimensions at most 4096.
-Zoom uses the existing bitmap. Old UI frames are released through ordinary bitmap
+Zoom buttons use the existing bitmap; pinch zoom is disabled and drag still pans. Old UI frames are released through ordinary bitmap
 ownership rather than recycling memory still visible to Compose. Unpublished
 stale frames are recycled. When the last visible reader window stops, frames drop
 and rendering closes; returning reopens the cached version. Other visible windows
@@ -31,7 +31,7 @@ JVM fixtures cover finite bounds, version fallback/clamping, atomic record failu
 namespace separation, bounded version retention, stale results, serialized close,
 zero-page rejection, allocation/render failures, rapid navigation, and trim/retry.
 Android tests generate synthetic multipage PDFs: real rendering, bitmap bounds,
-descriptor ownership, cache removal/read leases, navigation, pinch/drag, reading
+descriptor ownership, cache removal/read leases, navigation, disabled pinch zoom, drag panning, reading
 actual ActivityScenario recreation with renderer close/reopen, profile clearing and missing/corrupt-document retry guidance.
 These tests do not establish audible continuity, real Cloud compatibility, physical
 MIDI behavior, encrypted-PDF interoperability, or real process-kill recovery.

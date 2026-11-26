@@ -9,6 +9,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import android.graphics.Bitmap
 import com.pyano.markup.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -132,12 +134,12 @@ fun ScoreViewerContent(
                     }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = { onPage(-1) }, enabled = canNavigate && state.pageCount > 0 && reading.page > 0) { Text("Previous") }
                 Text(if (state.pageCount > 0) "Page ${reading.page + 1} of ${state.pageCount}" else "Opening PDF")
                 Button(onClick = { onPage(1) }, enabled = canNavigate && state.pageCount > 0 && reading.page < state.pageCount - 1) { Text("Next") }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.width(8.dp))
                 IconButton(onClick = { onTransform(reading.zoom / 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) {
                     Icon(Icons.Default.ZoomOut, contentDescription = "Zoom out")
                 }
@@ -191,15 +193,12 @@ fun ScoreViewerContent(
                 }
                 .pointerInput(state.session, viewport, frame?.width, frame?.height, pen) {
                     if (pen) return@pointerInput
-                    detectTransformGestures { _, pan, zoom, _ ->
+                    detectTransformGestures { _, pan, _, _ ->
                         val current = latestReading
-                        val currentX = max(0f, (fit * (frame?.width ?: 0) * current.zoom - viewport.width) / 2)
-                        val currentY = max(0f, (fit * (frame?.height ?: 0) * current.zoom - viewport.height) / 2)
-                        val nextZoom = (current.zoom * zoom).takeIf { it.isFinite() }?.coerceIn(1f, 4f) ?: current.zoom
-                        val nextX = max(0f, (fit * (frame?.width ?: 0) * nextZoom - viewport.width) / 2)
-                        val nextY = max(0f, (fit * (frame?.height ?: 0) * nextZoom - viewport.height) / 2)
-                        onTransform(nextZoom, if (nextX > 0) (current.panX * currentX + pan.x) / nextX else 0f,
-                            if (nextY > 0) (current.panY * currentY + pan.y) / nextY else 0f)
+                        val overflowX = max(0f, (fit * (frame?.width ?: 0) * current.zoom - viewport.width) / 2)
+                        val overflowY = max(0f, (fit * (frame?.height ?: 0) * current.zoom - viewport.height) / 2)
+                        onTransform(current.zoom, if (overflowX > 0) current.panX + pan.x / overflowX else 0f,
+                            if (overflowY > 0) current.panY + pan.y / overflowY else 0f)
                     }
                 }, contentAlignment = Alignment.Center) {
                 if (presentedPage != null) transition.AnimatedContent(

@@ -131,7 +131,11 @@ class ScoreViewerAndroidTest {
             compose.setContent(content)
             compose.onNodeWithText("Synthetic score").performClick()
             compose.waitUntil(5000) { viewer.state.value.frame != null }
-            compose.onNodeWithText("Page 1 of 3").assertIsDisplayed()
+            compose.onNodeWithText("Page 1 of 3").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("pdf-viewport").performTouchInput {
+                pinch(center + Offset(-40f, 0f), center + Offset(40f, 0f), center + Offset(-100f, 0f), center + Offset(100f, 0f))
+            }
+            compose.runOnIdle { assertEquals(1f, viewer.state.value.reading.zoom); assertEquals(0, viewer.state.value.reading.page) }
             compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeRight() }
             compose.runOnIdle { assertEquals(0, viewer.state.value.reading.page) }
             compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeLeft() }
@@ -140,14 +144,16 @@ class ScoreViewerAndroidTest {
             compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.reading.page == 0 }
             compose.onNodeWithText("Next").performClick()
             compose.waitUntil(5000) { !viewer.state.value.loading && viewer.state.value.reading.page == 1 }
-            compose.onNodeWithContentDescription("Zoom in").performClick()
+            compose.onNodeWithContentDescription("Zoom in").performScrollTo().performClick()
             compose.waitUntil(5000) { viewer.state.value.reading.zoom > 1f }
             compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeLeft() }
             compose.runOnIdle { assertEquals(1, viewer.state.value.reading.page) }
-            compose.onNodeWithContentDescription("Zoom out").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Zoom out").performScrollTo().assertIsDisplayed()
             compose.onNodeWithTag("pdf-viewport").performTouchInput {
                 pinch(center + Offset(-40f, 0f), center + Offset(40f, 0f), center + Offset(-100f, 0f), center + Offset(100f, 0f))
             }
+            compose.runOnIdle { assertEquals(1.25f, viewer.state.value.reading.zoom) }
+            compose.onNodeWithContentDescription("Zoom in").performScrollTo().performClick()
             compose.waitUntil(5000) { viewer.state.value.reading.zoom > 1.3f }
             compose.onNodeWithTag("pdf-viewport").performTouchInput { swipeUp() }
             compose.runOnIdle { assertTrue(kotlin.math.abs(viewer.state.value.reading.panY) > .01f) }
@@ -161,7 +167,7 @@ class ScoreViewerAndroidTest {
                 activity.setContent(content = content)
             }
             compose.waitUntil(5000) { opens.get() >= 2 && closes.get() >= 1 && viewer.state.value.frame != null }
-            compose.onNodeWithText("Page 2 of 3").assertIsDisplayed()
+            compose.onNodeWithText("Page 2 of 3").performScrollTo().assertIsDisplayed()
             compose.runOnIdle { viewer.trimMemory() }
             compose.onNodeWithText("PDF memory released. Tap Retry to reopen the saved page.").assertIsDisplayed()
             compose.onNodeWithText("Retry").performClick()
@@ -171,7 +177,7 @@ class ScoreViewerAndroidTest {
             compose.waitUntil(5000) { positions.load(profile.namespace, score).reading.page == 1 }
             compose.onNodeWithText("Synthetic score").performClick()
             compose.waitUntil(5000) { viewer.state.value.frame != null }
-            compose.onNodeWithText("Page 2 of 3").assertIsDisplayed()
+            compose.onNodeWithText("Page 2 of 3").performScrollTo().assertIsDisplayed()
             compose.runOnIdle { viewer.clearProfile() }
             compose.onNodeWithContentDescription("Back to scores").assertDoesNotExist()
         } finally { viewer.shutdown(); scope.cancel(); root.deleteRecursively() }

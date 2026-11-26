@@ -58,10 +58,13 @@ class ScoreInkAndroidTest {
             val zoom = compose.onNodeWithContentDescription("Zoom in").getUnclippedBoundsInRoot()
             val pen = compose.onNodeWithContentDescription("Pen").getUnclippedBoundsInRoot()
             val undo = compose.onNodeWithContentDescription("Undo pen mark").getUnclippedBoundsInRoot()
+            val pageNumber = compose.onNodeWithText("Page 1 of 2").getUnclippedBoundsInRoot()
+            assertEquals(pageNumber.top.value + pageNumber.bottom.value, zoom.top.value + zoom.bottom.value, 2f)
+            assertEquals(pageNumber.top.value + pageNumber.bottom.value, pen.top.value + pen.bottom.value, 2f)
             assertTrue(pen.left >= zoom.right)
             assertTrue(undo.left >= pen.right)
-            compose.onNode(hasContentDescription("Score sync:", substring = true)).assertIsDisplayed()
-            compose.onNodeWithContentDescription("Pen").performClick()
+            compose.onNode(hasContentDescription("Score sync:", substring = true)).performScrollTo().assertIsDisplayed()
+            compose.onNodeWithContentDescription("Pen").performScrollTo().performClick()
             compose.onNodeWithTag("score-pen-canvas").performTouchInput {
                 swipe(Offset(width * .4f, height * .45f), Offset(width * .6f, height * .55f), 500)
             }
@@ -69,7 +72,7 @@ class ScoreInkAndroidTest {
             compose.runOnIdle { assertEquals(0, pageTurns); current.value = session() }
             compose.waitUntil(5000) { current.value.state.value.loaded && current.value.state.value.strokes.isNotEmpty() }
             assertTrue(current.value.state.value.strokes.single().points.all { p -> p.all { it in 0f..1f } })
-            compose.onNodeWithContentDescription("Undo pen mark").performClick()
+            compose.onNodeWithContentDescription("Undo pen mark").performScrollTo().performClick()
             compose.waitUntil(5000) { current.value.state.value.strokes.singleOrNull()?.deleted == true && !current.value.state.value.saving }
             val stored = inkStore(context, profile, score.scoreId, score.sha256).read(0)
             assertTrue(stored.single().deleted)
