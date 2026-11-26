@@ -105,8 +105,8 @@ class MasteringUiTest {
             assertEquals(file.length(), output.length())
             runBlocking {
                 val measured = measureMastering(output, null)
-                assertEquals(-18f, measured.lufs!!, .3f)
-                assertTrue(measured.peakDb <= -.99f)
+                assertEquals(-20f, measured.lufs!!, .3f)
+                assertTrue(measured.peakDb <= -2.99f)
             }
         } finally {
             compose.runOnIdle { active.value = false }

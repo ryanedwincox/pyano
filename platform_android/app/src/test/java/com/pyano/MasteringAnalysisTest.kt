@@ -50,8 +50,8 @@ class MasteringAnalysisTest {
             val file = tone("level-$index.wav", amplitude)
             val original = file.readBytes()
             val plan = analyzeMastering(file, MasteringSettings())
-            assertEquals(-18f, plan.after.lufs!!, .3f)
-            assertTrue(plan.after.peakDb <= -1f + .01f)
+            assertEquals(-20f, plan.after.lufs!!, .3f)
+            assertTrue(plan.after.peakDb <= -3f + .01f)
             assertTrue(plan.after.points.size <= 1000)
             assertArrayEquals(original, file.readBytes())
         }
@@ -61,8 +61,8 @@ class MasteringAnalysisTest {
         }
         for (preset in CompressionPreset.entries) {
             val plan = analyzeMastering(dynamic, MasteringSettings(compression = preset.compression))
-            assertEquals(-18f, plan.after.lufs!!, .5f)
-            assertTrue(plan.after.peakDb <= -.99f)
+            assertEquals(-20f, plan.after.lufs!!, .5f)
+            assertTrue(plan.after.peakDb <= -2.99f)
             if (preset != CompressionPreset.GENTLE) assertTrue(plan.after.points.any { it.compressorDb > .05f })
         }
     }
@@ -90,7 +90,7 @@ class MasteringAnalysisTest {
             val left = if (i % 500 == 0) .99f else .02f
             chain.process(left, left * .25f)
             assertEquals(chain.outputLeft * .25f, chain.outputRight, .00001f)
-            assertTrue(abs(chain.outputLeft) <= dbToLinear(-1f) + .00001f)
+            assertTrue(abs(chain.outputLeft) <= dbToLinear(-3f) + .00001f)
         }
         val limiter = Limiter(-1f)
         repeat(1000) { i -> assertTrue(abs(limiter.process(if (i == 0) 2f else 0f)) <= dbToLinear(-1f) + .00001f) }
@@ -118,7 +118,7 @@ class MasteringAnalysisTest {
         val output = File(exportMaster(file.path, plan.chain()) {})
         val measured = measureMastering(output, null)
         assertEquals(plan.after.lufs!!, measured.lufs!!, .02f)
-        assertTrue(measured.peakDb <= -.99f)
+        assertTrue(measured.peakDb <= -2.99f)
         val before = directory.root.list()!!.toSet()
         try {
             exportMaster(file.path, plan.chain()) { throw CancellationException("Cancel export") }

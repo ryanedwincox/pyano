@@ -2,8 +2,8 @@
 # Recording export and mastering
 
 The recording's mastering dialog opens on **Simple**. It silently analyzes the
-whole source, starting with loudness matching enabled at −18 LUFS, Balanced
-compression and a final −1 dBFS sample-peak limiter. Preview and export stay
+whole source, starting with loudness matching enabled at −20 LUFS, Balanced
+compression and a final −3 dBFS sample-peak limiter. Preview and export stay
 unavailable until analysis for the current settings finishes. Originals remain
 unchanged; export creates a new `_final[N].wav` beside the source. Saving a new
 recording opens this dialog immediately, including when recording from a score.
@@ -53,7 +53,9 @@ than silently claiming that the requested loudness was reached.
 
 Dynamics use linked stereo gain to preserve the stereo image. The limiter caps
 sample peaks, not reconstructed intersample peaks; the displayed dBFS ceiling
-is not a true-peak guarantee after lossy encoding.
+is not a true-peak guarantee after lossy encoding. The ceiling limits peaks;
+average listening level is controlled by the LUFS target and speaker volume.
+Changing defaults affects new exports; existing mastered files stay unchanged.
 
 ## Files and cancellation
 

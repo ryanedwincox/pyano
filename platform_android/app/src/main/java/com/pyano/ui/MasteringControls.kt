@@ -25,7 +25,7 @@ internal fun MasteringControls(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Match recording volume", style = MaterialTheme.typography.titleMedium)
-                    Text("Target: %.0f LUFS".format(settings.targetLufs), style = MaterialTheme.typography.bodySmall)
+                    Text("Average target: %.0f LUFS".format(settings.targetLufs), style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = settings.normalize, enabled = enabled, onCheckedChange = { onChange(settings.copy(normalize = it)) })
             }
@@ -37,7 +37,7 @@ internal fun MasteringControls(
                 }
             }
             Text(settings.preset?.description ?: "Custom compression · adjusted in Advanced", style = MaterialTheme.typography.bodySmall)
-            Text("Final limiter: %.1f dBFS · original recording is kept".format(settings.ceiling), style = MaterialTheme.typography.bodySmall)
+            Text("Peak ceiling: %.1f dBFS · original recording is kept".format(settings.ceiling), style = MaterialTheme.typography.bodySmall)
         }
     }
     if (advanced) {

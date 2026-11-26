@@ -14,10 +14,10 @@ enum class CompressionPreset(val title: String, val description: String, val com
 data class MasteringSettings(
     val eq: List<MasteringEq> = listOf(MasteringEq(250f), MasteringEq(1200f), MasteringEq(8000f)),
     val compression: MasteringCompression = CompressionPreset.BALANCED.compression,
-    val ceiling: Float = -1f,
+    val ceiling: Float = -3f,
     val limiterRelease: Float = 100f,
     val normalize: Boolean = true,
-    val targetLufs: Float = -18f,
+    val targetLufs: Float = -20f,
 ) {
     val preset get() = CompressionPreset.entries.find { it.compression == compression }
     fun chain(sampleRate: Int, inputGain: Float = 0f, outputGain: Float = 0f): MasteringChain {
