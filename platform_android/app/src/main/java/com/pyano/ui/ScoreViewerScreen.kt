@@ -9,7 +9,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import android.graphics.Bitmap
 import com.pyano.markup.*
-import kotlinx.coroutines.launch
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -18,6 +17,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.ZoomIn
@@ -90,8 +94,6 @@ fun ScoreViewerContent(
     val markup = state.source?.markup
     val ink = markup?.state?.collectAsState()?.value ?: InkPage()
     var pen by remember(state.source?.score?.sha256) { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    var exportMessage by remember(state.source?.score?.sha256) { mutableStateOf<String?>(null) }
     LaunchedEffect(markup, state.reading.page) { markup?.watch(state.reading.page) }
     val reading = state.reading
     val latestReading by rememberUpdatedState(reading)
@@ -134,31 +136,22 @@ fun ScoreViewerContent(
                 Button(onClick = { onPage(-1) }, enabled = canNavigate && state.pageCount > 0 && reading.page > 0) { Text("Previous") }
                 Text(if (state.pageCount > 0) "Page ${reading.page + 1} of ${state.pageCount}" else "Opening PDF")
                 Button(onClick = { onPage(1) }, enabled = canNavigate && state.pageCount > 0 && reading.page < state.pageCount - 1) { Text("Next") }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { onTransform(reading.zoom / 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) {
                     Icon(Icons.Default.ZoomOut, contentDescription = "Zoom out")
                 }
                 IconButton(onClick = { onTransform(reading.zoom * 1.25f, reading.panX, reading.panY) }, enabled = state.pageCount > 0) {
                     Icon(Icons.Default.ZoomIn, contentDescription = "Zoom in")
                 }
-                TextButton(onClick = { onTransform(1f, 0f, 0f) }, enabled = state.pageCount > 0) { Text("Reset zoom") }
-            }
-            if (markup != null) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = pen, enabled = ink.loaded && !ink.saving && !ink.exporting,
-                        onClick = { pen = !pen }, label = { Text("Pen") })
-                    TextButton(onClick = markup::undo, enabled = ink.loaded && !ink.saving && !ink.exporting && ink.strokes.any { !it.deleted }) { Text("Undo") }
-                    TextButton(onClick = {
-                        scope.launch {
-                            try { exportMessage = markup.export() }
-                            catch (error: kotlinx.coroutines.CancellationException) { throw error }
-                            catch (error: Exception) { exportMessage = error.message ?: "Could not export marked PDF" }
-                        }
-                    }, enabled = ink.loaded && !ink.saving && !ink.exporting) { Text(if (ink.exporting) "Exporting…" else "Export marked PDF") }
-                    if (ink.error) TextButton(onClick = markup::retry) { Text("Retry") }
+                if (markup != null) {
+                    IconToggleButton(checked = pen, enabled = ink.loaded && !ink.saving && !ink.exporting,
+                        onCheckedChange = { pen = it }) { Icon(Icons.Default.Edit, contentDescription = "Pen") }
+                    IconButton(onClick = markup::undo, enabled = ink.loaded && !ink.saving && !ink.exporting && ink.strokes.any { !it.deleted }) {
+                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo pen mark")
+                    }
+                    ScoreInkStatus(ink, markup::retry)
                 }
-                if (pen) Text("Pen on · Turn off to zoom or swipe.", style = MaterialTheme.typography.bodySmall)
-                Text(ink.message, style = MaterialTheme.typography.bodySmall)
-                exportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
             state.message?.let { message ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -244,4 +237,23 @@ fun ScoreViewerContent(
             }
         }
     }
+}
+
+@Composable
+internal fun ScoreInkStatus(ink: InkPage, onRetry: () -> Unit) {
+    var details by remember { mutableStateOf(false) }
+    LaunchedEffect(ink.error, ink.loaded, ink.message) {
+        if (ink.error && !ink.loaded) details = true
+    }
+    IconButton(onClick = { details = true }, modifier = Modifier.semantics { contentDescription = "Score sync: ${ink.message}" }) {
+        if (ink.saving || !ink.loaded && !ink.error) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+        else Icon(when {
+            ink.error -> Icons.Default.CloudOff
+            ink.message == "Synced" -> Icons.Default.CloudDone
+            else -> Icons.Default.CloudUpload
+        }, contentDescription = null, tint = if (ink.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (details) AlertDialog(onDismissRequest = { details = false }, title = { Text("Score sync") },
+        text = { Text(ink.message) }, confirmButton = { TextButton(onClick = { details = false }) { Text("Close") } },
+        dismissButton = { if (ink.error) TextButton(onClick = { details = false; onRetry() }) { Text("Retry") } })
 }

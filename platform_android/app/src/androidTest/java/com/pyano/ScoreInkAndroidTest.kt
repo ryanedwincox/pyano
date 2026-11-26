@@ -53,7 +53,15 @@ class ScoreInkAndroidTest {
                     frame = BitmapPageFrame(bitmap), pageCount = 2), {}, { pageTurns++ }, { _, _, _ -> }, {})
             } } }
             compose.waitUntil(5000) { current.value.state.value.loaded }
-            compose.onNodeWithText("Pen", useUnmergedTree = true).performClick()
+            compose.onNodeWithText("Reset zoom").assertDoesNotExist()
+            compose.onNodeWithText("Export marked PDF").assertDoesNotExist()
+            val zoom = compose.onNodeWithContentDescription("Zoom in").getUnclippedBoundsInRoot()
+            val pen = compose.onNodeWithContentDescription("Pen").getUnclippedBoundsInRoot()
+            val undo = compose.onNodeWithContentDescription("Undo pen mark").getUnclippedBoundsInRoot()
+            assertTrue(pen.left >= zoom.right)
+            assertTrue(undo.left >= pen.right)
+            compose.onNode(hasContentDescription("Score sync:", substring = true)).assertIsDisplayed()
+            compose.onNodeWithContentDescription("Pen").performClick()
             compose.onNodeWithTag("score-pen-canvas").performTouchInput {
                 swipe(Offset(width * .4f, height * .45f), Offset(width * .6f, height * .55f), 500)
             }
@@ -61,7 +69,7 @@ class ScoreInkAndroidTest {
             compose.runOnIdle { assertEquals(0, pageTurns); current.value = session() }
             compose.waitUntil(5000) { current.value.state.value.loaded && current.value.state.value.strokes.isNotEmpty() }
             assertTrue(current.value.state.value.strokes.single().points.all { p -> p.all { it in 0f..1f } })
-            compose.onNodeWithText("Undo").performClick()
+            compose.onNodeWithContentDescription("Undo pen mark").performClick()
             compose.waitUntil(5000) { current.value.state.value.strokes.singleOrNull()?.deleted == true && !current.value.state.value.saving }
             val stored = inkStore(context, profile, score.scoreId, score.sha256).read(0)
             assertTrue(stored.single().deleted)
@@ -69,6 +77,29 @@ class ScoreInkAndroidTest {
             compose.runOnIdle { active.value = false }; compose.waitForIdle(); scope.cancel(); root.deleteRecursively()
             androidx.work.WorkManager.getInstance(base).cancelUniqueWork("score-ink-" + scoreHash("${profile.profileId}:${score.scoreId}:${score.sha256}:0".toByteArray()))
         }
+    }
+    @Test fun syncIconShowsFailureDetailsAndKeepsRetryReachable() {
+        var retries = 0
+        val message = "Local marks could not be saved"
+        compose.setContent { MaterialTheme {
+            com.pyano.ui.ScoreInkStatus(InkPage(page = 0, loaded = true, message = message, error = true)) { retries++ }
+        } }
+        compose.onNodeWithText(message).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Score sync: $message").performClick()
+        compose.onNodeWithText(message).assertIsDisplayed()
+        compose.onNodeWithText("Retry").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
+        compose.onNodeWithText("Score sync").assertDoesNotExist()
+    }
+    @Test fun unsavedLocalMarkFailureOpensDetailsAutomatically() {
+        var retries = 0
+        val message = "Could not save this mark. Check storage and tap Retry before leaving."
+        compose.setContent { MaterialTheme {
+            com.pyano.ui.ScoreInkStatus(InkPage(page = 0, loaded = false, message = message, error = true)) { retries++ }
+        } }
+        compose.onNodeWithText(message).assertIsDisplayed()
+        compose.onNodeWithText("Retry").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
     }
     @Test fun exportsEveryPageWithInkAndKeepsTheOriginalPdfUnchanged() = runBlocking<Unit> {
         val context = compose.activity

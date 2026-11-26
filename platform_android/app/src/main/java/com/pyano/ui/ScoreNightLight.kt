@@ -9,8 +9,8 @@ import androidx.compose.ui.platform.LocalContext
 
 enum class ScoreNightLight(val label: String, val badge: String, red: Float, green: Float, blue: Float) {
     OFF("Off", "Off", 1f, 1f, 1f),
-    GENTLE("Gentle", "1", .78f, .68f, .50f),
-    DIM("Dim", "2", .48f, .37f, .23f);
+    GENTLE("Gentle", "1", .89f, .84f, .75f),
+    DIM("Dim", "2", .74f, .685f, .615f);
 
     val filter: ColorFilter? = if (this.name == "OFF") null else ColorFilter.colorMatrix(ColorMatrix(floatArrayOf(
         red, 0f, 0f, 0f, 0f,

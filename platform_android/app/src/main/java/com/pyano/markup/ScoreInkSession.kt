@@ -59,7 +59,7 @@ class ScoreInkSession(
     fun add(page: Int, points: List<List<Float>>) {
         if (!mutable.value.loaded || saving || mutable.value.exporting || page != mutable.value.page) return
         if (mutable.value.strokes.size >= 500) {
-            mutable.value = mutable.value.copy(error = true, message = "This page has reached its 500-stroke limit. Existing marks can still be undone or exported.")
+            mutable.value = mutable.value.copy(error = true, message = "This page has reached its 500-stroke limit. Existing marks can still be undone.")
             return
         }
         persist(page, InkStroke(UUID.randomUUID().toString(), points))
