@@ -135,10 +135,10 @@ class ScoreInkAndroidTest {
                 assertEquals(2, renderer.pageCount)
                 repeat(2) { index ->
                     val page = renderer.openPage(index)
-                    val bitmap = Bitmap.createBitmap(400, 600, Bitmap.Config.ARGB_8888)
+                    val bitmap = Bitmap.createBitmap(1200, 1800, Bitmap.Config.ARGB_8888)
                     try {
                         bitmap.eraseColor(Color.WHITE); page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                        val pixel = bitmap.getPixel(200, 300)
+                        val pixel = bitmap.getPixel(600, 900)
                         if (index == 0) assertEquals(Color.WHITE, pixel) else assertEquals(Color.BLACK, pixel)
                     } finally { page.close(); bitmap.recycle() }
                 }
