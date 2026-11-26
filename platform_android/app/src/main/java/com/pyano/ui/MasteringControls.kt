@@ -33,7 +33,17 @@ internal fun MasteringControls(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CompressionPreset.entries.forEach { preset ->
                     FilterChip(selected = settings.preset == preset, enabled = enabled,
-                        onClick = { onChange(settings.copy(compression = preset.compression)) }, label = { Text(preset.title) })
+                        onClick = { onChange(settings.copy(compression = preset.compression)) }, label = { Text(preset.title) },
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = enabled, selected = settings.preset == preset,
+                            borderColor = MaterialTheme.colorScheme.outline,
+                            selectedBorderColor = MaterialTheme.colorScheme.primary,
+                            borderWidth = 1.dp, selectedBorderWidth = 1.dp,
+                        ),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                        ))
                 }
             }
             Text(settings.preset?.description ?: "Custom compression · adjusted in Advanced", style = MaterialTheme.typography.bodySmall)
