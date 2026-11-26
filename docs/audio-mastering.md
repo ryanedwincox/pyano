@@ -2,7 +2,7 @@
 # Recording export and mastering
 
 The recording's mastering dialog opens on **Simple**. It silently analyzes the
-whole source, starting with loudness matching enabled at −20 LUFS, Balanced
+whole source, starting with loudness matching enabled at −20 LUFS, Gentle
 compression and a final −3 dBFS sample-peak limiter. Preview and export stay
 unavailable until analysis for the current settings finishes. Originals remain
 unchanged; export creates a new `_final[N].wav` beside the source. Saving a new

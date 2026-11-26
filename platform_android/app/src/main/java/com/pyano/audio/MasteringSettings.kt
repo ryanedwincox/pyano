@@ -13,7 +13,7 @@ enum class CompressionPreset(val title: String, val description: String, val com
 }
 data class MasteringSettings(
     val eq: List<MasteringEq> = listOf(MasteringEq(250f), MasteringEq(1200f), MasteringEq(8000f)),
-    val compression: MasteringCompression = CompressionPreset.BALANCED.compression,
+    val compression: MasteringCompression = CompressionPreset.GENTLE.compression,
     val ceiling: Float = -3f,
     val limiterRelease: Float = 100f,
     val normalize: Boolean = true,

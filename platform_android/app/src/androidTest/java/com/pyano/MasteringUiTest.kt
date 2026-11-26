@@ -43,7 +43,7 @@ class MasteringUiTest {
             }
         } }
         compose.onNodeWithText("Simple").assertIsSelected()
-        compose.onNodeWithText("Balanced", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("Gentle").assertIsSelected()
         compose.onNodeWithContentDescription("Ratio").assertDoesNotExist()
         compose.onNodeWithText("Gentle").performClick()
         compose.onNodeWithText("Advanced").performClick()
